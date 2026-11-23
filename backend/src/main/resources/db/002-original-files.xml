@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+  <changeSet id="002-original-path" author="medcollect">
+    <addColumn tableName="mc_original">
+      <column name="original_path" type="VARCHAR(180)"/>
+    </addColumn>
+  </changeSet>
+
+  <changeSet id="002-allow-file-only-originals" author="medcollect">
+    <dropNotNullConstraint tableName="mc_original" columnName="original_bytes" columnDataType="BLOB"/>
+  </changeSet>
+
+  <changeSet id="002-migrate-legacy-originals" author="medcollect" runAlways="true">
+    <preConditions onFail="MARK_RAN">
+      <and>
+        <columnExists tableName="mc_original" columnName="original_bytes"/>
+        <columnExists tableName="mc_material" columnName="raw_text"/>
+      </and>
+    </preConditions>
+    <customChange class="com.medcollect.LegacyOriginalMigration">
+      <param name="originalDir" value="${originalDir}"/>
+    </customChange>
+  </changeSet>
+
+  <changeSet id="002-require-original-path" author="medcollect" context="@file-storage-cutover">
+    <addNotNullConstraint tableName="mc_original" columnName="original_path" columnDataType="VARCHAR(180)"/>
+  </changeSet>
+
+  <changeSet id="002-drop-legacy-original-bytes" author="medcollect" context="@file-storage-cutover">
+    <dropColumn tableName="mc_original" columnName="original_bytes"/>
+  </changeSet>
+
+  <changeSet id="002-drop-legacy-extracted-text" author="medcollect" context="@file-storage-cutover">
+    <dropColumn tableName="mc_material" columnName="raw_text"/>
+  </changeSet>
+</databaseChangeLog>

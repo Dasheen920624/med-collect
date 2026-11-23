@@ -1,0 +1,79 @@
+package com.medcollect;
+
+import java.util.List;
+import java.util.Map;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonUnwrapped;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.Size;
+
+final class Records {
+    private Records() {}
+
+    enum Mode { URL, EUROPE_PMC, WEB, UPLOAD }
+    enum CaptureMode { SINGLE, LINKS }
+    enum ScheduleMode { MANUAL, INTERVAL, ONCE, DAILY }
+    enum AccessState { PUBLIC, PENDING, AUTHORIZED }
+    enum MaterialStatus { PENDING, APPROVED, RETURNED }
+    enum KnowledgeStatus { DRAFT, PENDING, APPROVED, RETURNED, SYNCING, SYNC_FAILED, SYNCED }
+    enum RunStatus { RUNNING, SUCCEEDED, PARTIAL, FAILED }
+
+    record Page<T>(List<T> rows, long total, int page, int size) {}
+    record Source(String id, String name, String url, String note, boolean enabled, long createdAt, AccessState accessState) {}
+    record SourceInput(@NotBlank @Size(max = 120) String name, @NotBlank @Size(max = 1000) String url,
+                       @Size(max = 500) String note, boolean enabled, AccessState accessState) {}
+    record Task(String id, String name, @JsonProperty("mode") Mode collectionMode, String queryText, String sourceId, CaptureMode captureMode,
+                int resultLimit, int intervalMinutes, Long nextRunAt, boolean enabled, String createdBy,
+                long createdAt, Long lastRunAt, String leaseToken, Long leaseUntil, int revision,
+                ScheduleMode scheduleMode, Long scheduleAt, String dailyTime, boolean selectResults) {}
+    record TaskInput(@NotBlank @Size(max = 120) String name, @NotNull Mode mode,
+                     @Size(max = 1000) String queryText, String sourceId, @NotNull CaptureMode captureMode,
+                     @Min(1) @Max(20) int resultLimit, @Min(0) @Max(525600) int intervalMinutes,
+                     boolean enabled, Integer revision, ScheduleMode scheduleMode, Long scheduleAt,
+                     @Size(max = 5) String dailyTime, boolean selectResults,
+                     @Size(max = 20) List<@NotBlank @Size(max = 36) String> sourceIds,
+                     @Size(max = 20) List<@NotBlank @Size(max = 1000) String> urls) {}
+    record Run(String id, String taskId, RunStatus status, String actor, long startedAt, Long finishedAt,
+               int newCount, int duplicateCount, int failureCount, String note, String parentRunId, int metadataCount) {}
+    record RunResult(String id, String runId, String materialId, String title, String url, String status, String note,
+                     String sourceId) {}
+    record CandidateSelection(@NotNull @Size(min = 1, max = 20) List<@NotBlank @Size(max = 36) String> resultIds) {}
+
+    record MaterialList(String id, String title, String formatCode, String fileName, String sourceUrl,
+                        String sourceName, long capturedAt, MaterialStatus status) {}
+    record Material(String id, String fingerprint, String sha256, String title, String formatCode, String fileName,
+                    String mimeType, long sizeBytes, String sourceUrl, String fetchedUrl, String sourceName,
+                    String authors, String publisher, String published, String externalRef, String sourceAbstract,
+                    MaterialStatus status, long capturedAt, int revision) {
+        boolean pdf() { return "PDF".equals(formatCode); }
+    }
+    record MaterialDetail(@JsonUnwrapped Material material, String rawText) {}
+    record Acquired(String title, String formatCode, String fileName, String mimeType, String sourceUrl,
+                    String fetchedUrl, String sourceName, String authors, String publisher, String published,
+                    String externalRef, String sourceAbstract, String rawText, byte[] bytes) {}
+    record Registration(String materialId, boolean duplicate) {}
+    record Decision(@Positive int revision, boolean approved, @Size(max = 1000) String note,
+                    @Size(max = 36) String reviewId) {}
+    record MaterialDecision(@Positive int revision, boolean approved, @Size(max = 1000) String note,
+                            @Size(max = 12000) String sourceAbstract) {}
+
+    record KnowledgeList(String id, String materialId, String materialTitle, String title, String typeCode,
+                         KnowledgeStatus status, long updatedAt, String remoteId) {}
+    record Knowledge(String id, String materialId, String title, String typeCode, String knowledgeClass,
+                     String summary, String templateJson, String fieldsJson, String relationsJson,
+                     KnowledgeStatus status, int revision, String modelName, long createdAt, long updatedAt,
+                     String remoteId, String attachmentUrl, String syncPhase, Long syncLease,
+                     String syncToken, String syncError, String updateTargetId) {}
+    record DraftInput(@NotBlank @Size(max = 20) String typeCode, @Size(max = 60) String knowledgeClass,
+                      boolean useAi) {}
+    record DraftEdit(@Positive int revision, @NotBlank @Size(max = 100) String title,
+                     @Size(max = 12000) String summary, Map<String, String> fields,
+                     Map<String, List<String>> relations) {}
+    record Event(String id, String entityType, String entityId, String action, String actor, long occurredAt, String note) {}
+    record Dashboard(long tasks, long materials, long pendingMaterials, long pendingKnowledge, long synced, long metadata) {}
+}

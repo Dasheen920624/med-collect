@@ -1,0 +1,37 @@
+name: med-collect
+
+services:
+  app:
+    image: ${MEDCOLLECT_IMAGE:?set MEDCOLLECT_IMAGE in release.env}
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    env_file: ./config/app.env
+    environment:
+      MEDCOLLECT_BIND: 0.0.0.0
+      MEDCOLLECT_PORT: "18085"
+      MEDCOLLECT_ORIGINAL_DIR: /var/lib/med-collect/originals
+    ports:
+      - "${MEDCOLLECT_PUBLISH_HOST:?set MEDCOLLECT_PUBLISH_HOST in release.env}:${MEDCOLLECT_PUBLISH_PORT:-18085}:18085"
+    volumes:
+      - type: bind
+        source: ${MEDCOLLECT_STATE_DIR:-./state}
+        target: /var/lib/med-collect
+        bind:
+          create_host_path: false
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--noproxy", "*", "--max-time", "3", "-o", "/dev/null", "http://127.0.0.1:18085/api/csrf"]
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 25s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

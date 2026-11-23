@@ -1,0 +1,5 @@
+spring:
+  datasource:
+    url: ${MEDCOLLECT_DB_URL}
+    username: ${MEDCOLLECT_DB_USER}
+    password: ${MEDCOLLECT_DB_PASSWORD}

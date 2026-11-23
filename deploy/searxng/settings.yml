@@ -1,0 +1,51 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - chinaso
+      - crossref
+      - europepmc
+      - pubmed
+
+general:
+  instance_name: Med Collect Search
+  debug: false
+
+search:
+  default_lang: zh-CN
+  formats:
+    - json
+
+default_doi_resolver: ''
+
+server:
+  limiter: false
+  public_instance: false
+  image_proxy: false
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 11.0
+
+engines:
+  - name: bing
+    base_url: https://cn.bing.com
+    disabled: false
+    timeout: 6.0
+  - name: chinaso
+    engine: chinaso
+    shortcut: chn
+    disabled: false
+    timeout: 6.0
+  - name: crossref
+    categories: [general, science]
+    disabled: false
+    timeout: 10.0
+  - name: europepmc
+    categories: [general, science]
+    disabled: true
+    timeout: 8.0
+  - name: pubmed
+    categories: [general, science]
+    disabled: true
+    timeout: 9.0

@@ -1,0 +1,107 @@
+# 开发交接
+
+## 节点 0 · 分析
+
+- **完成** · 读取原型入口和相关脚本，核对业务仓库保存、知识类别、模板、关系和附件代码。通过线上只读查询核对知识类别与模板。Oracle 已确认 schema 与表空间，模型网关确认模型 ID。
+- **入口** · [分析与计划](implementation.md)。业务接口的核对位置和数据契约见分析记录。
+- **验证边界** · 分析阶段使用线上读接口。4.23 证书链未被当前主机信任，同步客户端需采用信任链或预先核对的叶证书 SHA-256 指纹。
+- **下一节点** · 按实施计划创建采集服务和 Vue 工作台，配置与运行说明维护在 README。
+
+## 节点 1 · 数据层与应用骨架
+
+- **入口** · `MedCollectApplication`、`SecurityConfig`、`db/changelog.xml`、`db/001-collection.sql`。开发入口为仓库的 `backend/` 和 `web/`。
+- **持久化** · `MC_SOURCE`、`MC_TASK`、`MC_RUN`、`MC_RUN_RESULT`、`MC_MATERIAL`、`MC_ORIGINAL`、`MC_KNOWLEDGE`、`MC_EVENT`、`MC_SETTINGS`。迁移对每个 Oracle DDL 单独登记。原件字节和资料元数据在一次事务里写入。
+- **接手方式** · 按 [README](../README.md) 启动本地 H2 或 Oracle 配置。迁移过的表结构通过新增 changeset 更新。运行中的任务与同步使用版本和租约处理并发。
+
+## 节点 2 · 采集与原文
+
+- **入口** · `CollectionController`、`CollectionService`、`Acquisition`、`SourceHttp`、`DocumentReader`、`MaterialService`。前端对应「资料来源」「采集任务」「文献原文」。
+- **行为** · 计划执行和手动执行走同一采集入口。所有资料保留来源、实际获取地址、文件指纹及执行记录。重复采集仍关联本次执行。网页保留源字节和提取文本，PDF 全文只存在原件中。
+- **回归证据** · `WorkflowIntegrationTest.schedulesCollectionAndKeepsDuplicateRunProvenance` 覆盖到期执行、网页原文入库、去重与原文跨任务追溯。
+- **接手方式** · 供应商适配在 `Acquisition`；如果接入新的检索服务，在这里把结果转换为采集候选和出处，并复用原件下载及入库流程。
+
+## 节点 3 · 模型、模板和人工审核
+
+- **入口** · `KnowledgeTemplates`、`ModelService`、`KnowledgeWorkflow`、`KnowledgeController`。模板优先读 4.23 的 `knowledge-content-template`，接口临时不可用时使用缓存或随包快照。草稿保留创建时的模板。
+- **状态** · 原文待审、通过或退回。知识按草稿、待审、通过或退回流转。摘要为提交审核的必填字段。通过以后可发起同步，审计记录保留操作者、操作和时间。
+- **模型接口** · `/chat/completions` 使用 `messages`、模型、温度和超时。解析结果只写入当前模板定义的字段。模型无可读原文或返回无效 JSON 时，界面支持手工建稿与编辑。
+- **接手方式** · 新类别先核对 `K_KNOWLEDGE.TYPE`、子类编码、当前模板和关系接口。加入 `KnowledgeTemplates`；如需修改 PDF 落位，检查 `cdssContent` 和同步用例。模型密码配置由 `ModelService` 处理，环境变量见 README。
+
+## 节点 4 · 4.23 同步
+
+- **入口** · `SyncService`、`CdssClient`。先保存知识，保存业务主键后上传 PDF，再绑定原件并核对业务记录。只在知识人工审核通过和部署启用同步时执行。
+- **回执** · 本地知识 UUID 在 4.23 的备注中，格式为 `[MC:UUID]`。新增超时后按标题和标识读取回执。附件以稳定 ID 绑定，重试先读取实际关系。同步记录可定位至业务预览页。
+- **回归证据** · `WorkflowIntegrationTest.keepsPdfOriginalAndReconcilesInterruptedRemoteWrites` 模拟新增和附件绑定已提交但 HTTP 回执中断。三次尝试后知识和附件各只写入一次，并核对 PDF 字节、目标类别及正文摘要。
+- **操作交接** · 首条正式同步使用人工审核通过的真实资料。检查目标分类、摘要、PDF 预览和回执。业务侧按原流程决定后续启用或发布。
+
+## 节点 5 · 构建和交互验收
+
+- **构建** · 在 JDK 21 和 Node 24 下通过 `pnpm --dir web build`、`mvn -f backend/pom.xml clean verify`。Vue 资源与 Java API 一并打包到 `backend/target/med-collect-0.1.0.jar`。
+- **浏览器** · 本地 H2 验证登录、文件上传、原件信息、原文通过、目标类型选择、手工建稿、提交审批、审核通过及待同步状态。
+- **Oracle 联调** · 交付包以 Oracle 配置启动成功。SQL 查询确认采集 schema 中有 9 张 `MC_` 表，Liquibase 登记了 17 个迁移项。工作台与统计 API 均返回 HTTP 200。在 Oracle 事务内验证了任务、长文本 CLOB、原件 BLOB、知识审核和分页。测试事务已回滚并核对清理结果。
+- **采集联调** · Europe PMC 实际检索和入库运行成功，取得一份包含摘要和原始链接的文献元数据。PDF 原件读写与续传由集成测试覆盖。
+- **模型及业务联调** · 真实模型 `deepseek-flash` 使用 4.23 在线期刊模板生成合成资料的知识草稿。实际 4.23 接口返回 14 个类别入口，模板和类别树可读取。
+- **现场配置** · 按 README 配置业务账户、证书和同步开关。全网搜索需可访问的 SearXNG 实例。首次正式写入使用已由人工审核通过的资料验收。
+
+联调中 Oracle 保留字通过将数据库字段改为 `collection_mode` 解决，Vue 对应 API 字段为 `mode`。本机网络将 Europe PMC 的已知域名映射到代理地址，下载器仍以标准 HTTPS 读取。其他通过代理合成地址或内网路由访问的来源可按 README 登记精确主机。
+
+## 节点 6 · 真实 PDF 验收
+
+- **运行入口** · Oracle 配置下的 [本地采集工作台](http://127.0.0.1:8085/)。服务日志位于仓库的 `.medcollect/operations/`。
+- **采集证据** · PLOS ONE 家用血压计准确性研究，DOI `10.1371/journal.pone.0155677`，CC BY 开放许可。实际网址采集成功。PDF 508632 字节，入库和预览路径的 SHA-256 均为 `32f055ac63d41627cf34ff5ce34207beeba51fd308c64f36139c8b7ba643fc0f`。[出版社原文](https://journals.plos.org/plosone/article?id=10.1371%2Fjournal.pone.0155677)
+- **知识稿件** · `deepseek-flash` 使用 4.23 在线模板生成稿件。摘要已按论文核对，补入 DOI 和许可。目标类型为医学期刊 `31`，子类为高血压 `170103`。
+- **人工审核** · 已核对提交版本、授权人工审核决定和同步回执。
+- **4.23 回读** · 知识管理的期刊列表可按高血压类别检索到验收论文，详情中的摘要与审核稿一致。预览接口返回的 PDF 为 508632 字节，SHA-256 与出版社原文一致。
+
+
+## 节点 7 · 首次服务器部署
+
+- **服务入口** · 采集系统使用 18085 端口和 Oracle profile。首次部署由 systemd 管理 `med-collect.service`。
+- **首次发行** · `0.1.0-20261123-52d1435bc4e2`，使用专用 Temurin JRE 21.0.13.1+2。
+- **部署验收** · 客户端首页和 CSRF 接口返回 HTTP 200。服务端验证管理员、审核员登录，既有 Oracle 知识记录和 PDF 原件可读。`deepseek-flash` 调用成功，4.23 鉴权及读取 14 个类别入口和模板成功。
+
+## 节点 8 · 迁移到 Docker
+
+- **迁移** · 2026-11-23 迁至 Docker Compose 项目 `med-collect`。服务发布 18085，容器通过健康检查，重启策略为 `unless-stopped`。
+- **发行与配置** · 0.1.0 镜像。Compose 从 `config/app.env` 读取运行变量，应用工作目录挂载到部署目录的 `state/`。启用采集调度和审核后同步。
+- **验收结果** · 临时容器关闭调度和同步写入后验收，通过才切换正式端口。正式容器通过管理员、审核员登录，回读已同步的医学期刊 › 高血压知识，摘要 263 字符，PDF 508632 字节且 SHA-256 与节点 6 一致。`deepseek-flash` 调用成功，4.23 类别与模板测试读取 14 个类别入口。
+- **迁移排查** · 首次切换的登录超时定位为 Tomcat 会话随机种子读取阻塞。回退原服务期间调整 Dockerfile 的 JVM 种子源后，临时和正式容器的首次管理员登录均在 1 秒内完成。官方基础镜像经 SHA-256 校验后导入，离线镜像包位于部署目录的 `images/`。
+- **旧部署清理** · 已移除旧 systemd unit、旧 JAR 和 JRE、配置目录、工作目录及专用主机账户。清理后核对现网容器仍为同一实例，首页和 CSRF 接口返回 HTTP 200。
+- **维护入口** · [Docker 部署、版本更新和回滚](deployment.md)。构建文件为仓库 `deploy/Dockerfile`、`deploy/compose.yaml`。发版时检查容器健康、两种登录角色、PDF 回读与接口连通性。
+
+## 节点 9 · 原件迁移到服务器文件
+
+- **原件迁移发行** · 0.1.1。服务器原件根目录是部署目录的 `state/originals`，容器内路径为 `/var/lib/med-collect/originals`。
+- **持久化变更** · `OriginalFiles` 统一处理各类型原件，按资料 ID 分目录。现有及新增的提取文本随文件保存。`MC_ORIGINAL.ORIGINAL_PATH` 保存相对路径，摘要和业务记录保存在原来的 Oracle 表中。预览、下载、模型和 PDF 附件同步均通过同一文件存储读原件。
+- **迁移证据** · `LegacyOriginalMigration` 先复制并核对字节数和 SHA-256，再录入路径。试迁通过后重跑校验并清理 `MC_ORIGINAL.ORIGINAL_BYTES` 与 `MC_MATERIAL.RAW_TEXT`。用节点 6 的历史 PDF 核对迁移后的文件大小和 SHA-256。
+- **功能验收** · Spring Boot 测试通过 3 项，覆盖迁移复跑、损坏时保留旧数据，以及 PDF 和 HTML 的原件读取、模型解析和 PDF 同步。正式容器通过两种角色登录和已同步 PDF 预览，`deepseek-flash` 和 4.23 连接测试成功。
+- **维护入口** · [原件存储与备份](deployment.md#原件存储与备份)。备份 Oracle 时同时保存原件目录。应用回滚使用支持文件存储的发行。本机旧 Oracle 联调进程已停止，避免连接同一生产 schema 的实例向不同文件目录写入。
+
+## 节点 10 · 注册与用户管理
+
+- **发行** · 0.1.2。登录页提供注册入口，「用户管理」由管理员访问。
+- **账号数据** · Liquibase 新增 `MC_USER_ACCOUNT`，数据库持久化账号、角色、启用状态和 BCrypt 哈希。原管理员和审核员通过首次初始化导入，原密码可登录。`MC_SETTINGS` 的初始化记录用于保证后续重启读取数据库账号。
+- **权限和会话** · 新注册账号为审核员。管理员可新增账号、调整角色、启用或停用及重置密码。账号变更会使其现有会话失效。系统至少保留一个启用的管理员。知识审核和同步仍走原有状态校验。
+- **验收** · Vue 构建和 4 项后端测试通过。隔离库的浏览器测试覆盖注册、审核员页面、管理员列表和停用操作。现网验证原账号登录、管理员账户列表、审核员禁止访问账户列表和已迁移 PDF 回读。
+- **接手入口** · `UserAccounts`、`UserAccountController`、`SecurityConfig` 和 `web/src/views/Users.vue`。回滚选择同时支持持久化用户与磁盘原件的版本。[部署与更新](deployment.md)
+
+## 节点 11 · 原型核查及采集管理升级
+
+- **发行** · 0.1.3。Oracle 正式容器通过健康检查，定时采集和人工审核后的业务同步已启用。
+- **实现** · `CollectionService` 和 `CaptureSchedule` 支持多来源、定时和检索结果选采。`Classifications` 管理原文分类和批量关联。`TemplateProfiles` 管理 4.23 模板对应的本地提取规则，稿件保留模板快照。Liquibase `004` 和 `005` 为此新增 13 项迁移。
+- **验收** · 6 项后端回归测试通过，隔离浏览器逐个打开八个入口。发布预演从 PLOS ONE 采集真实 PDF、调用 `deepseek-flash` 生成摘要并提交待审。业务接口返回 14 个类别入口。正式库已核对历史知识和服务器 PDF。[核查记录](collection-audit.md)
+- **接手方式** · 全网检索的 SearXNG 验收见节点 12。需要登录或机构授权的来源按站点接入。启用单次或每日计划后，回滚前检查目标版本的计划兼容性。[部署与更新](deployment.md)
+
+## 节点 12 · SearXNG 部署与现网选采
+
+- **部署** · SearXNG 项目 `med-collect-search`。SearXNG `2026.11.23-a7163d091` 经官方 Linux amd64 清单核验并离线导入。容器连接 `med-collect_default`，应用使用 `http://searxng:8080/search`。[部署与复验](deployment.md#searxng-全网搜索)
+- **搜索** · 管理员在正式系统执行手动任务，关键词为 `home blood pressure monitoring hypertension PLOS ONE`。搜索保存 20 条候选，搜索阶段入库数为 0。选中 Crossref 返回的论文后，关联采集执行新增 1 份全文，失败数为 0。
+- **原文** · DOI `10.1371/journal.pone.0220460`，HTML 248893 字节，状态为待审。源记录保留出版社入口和实际读取的文章地址。下载文件和磁盘原件 SHA-256 一致。[出版社页面](https://journals.plos.org/plosone/article?id=10.1371%2Fjournal.pone.0220460)
+- **维护** · 启用 Bing、ChinaSo 和 Crossref。Europe PMC 与 PubMed 的 SearXNG 引擎在当前出网条件下暂时禁用。恢复连通后可在 `config/settings.yml` 中启用并重新验证。已入库样本可继续由审核人处理。
+
+## 节点 13 · 同步前查重与知识版本
+
+- **接口核对** · 4.23 的 `/knowledge/query` 可按类型、子类型、类别和名称分页并返回正文。`/knowledge/find-by-id` 读取详情，`/knowledge/save` 随原 ID 更新。`/knowledge/query-affix` 与原件预览用于附件回读和 SHA-256 校验。独立的 `/knowledge/version-log` 记录发布日志，字段没有知识主键。采集系统在 `MC_SYNC_VERSION` 记录逐条业务知识历史。
+- **实现** · `BusinessKnowledge` 匹配 DOI 或同类标题并生成新旧差异。`SyncReviews` 固定稿件修订、查重结果与人工审批。`SyncService` 在写入前复核业务基线，按审核结果新增、更新或关联跳过。更新保留业务未涉及字段和此前 PDF，在版本记录中保存业务回读快照。
+- **验收** · 9 项回归通过，覆盖同内容跳过、DOI 与标题匹配、多目标选择、迟到的匹配记录、业务侧变化重新审核、断点恢复、版本快照和附件。真实 4.23 的隔离读验收使用历史 DOI `10.1371/journal.pone.0155677`，原稿及 PDF 判定跳过，修改摘要后显示对应差异。业务更新在隔离环境完成，生产验收通过只读回读。
+- **发行** · 0.1.4。Oracle 迁移 `006-knowledge-sync.sql` 含 5 项，正式容器沿用现有原件目录。回滚到 0.1.3 前暂停 4.23 写入，恢复新版后复核未完成同步。[部署、操作与异常处理](deployment.md#知识同步查重与版本记录)

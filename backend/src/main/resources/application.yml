@@ -1,0 +1,44 @@
+server:
+  address: ${MEDCOLLECT_BIND:127.0.0.1}
+  port: ${MEDCOLLECT_PORT:8085}
+  error:
+    include-message: never
+    include-stacktrace: never
+  servlet:
+    session:
+      cookie:
+        same-site: strict
+        secure: ${MEDCOLLECT_HTTPS:false}
+spring:
+  profiles:
+    default: local
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 21MB
+  liquibase:
+    change-log: classpath:db/changelog.xml
+    contexts: file-storage-cutover
+    parameters:
+      originalDir: ${medcollect.original-dir}
+  datasource:
+    hikari:
+      maximum-pool-size: 8
+medcollect:
+  original-dir: ${MEDCOLLECT_ORIGINAL_DIR:./.medcollect/originals}
+  admin-user: ${MEDCOLLECT_ADMIN_USER:admin}
+  admin-password: ${MEDCOLLECT_ADMIN_PASSWORD:}
+  reviewer-user: ${MEDCOLLECT_REVIEWER_USER:}
+  reviewer-password: ${MEDCOLLECT_REVIEWER_PASSWORD:}
+  model-base-url: ${MEDCOLLECT_MODEL_URL:http://127.0.0.1:13000/v1}
+  model-name: ${MEDCOLLECT_MODEL_NAME:deepseek-flash}
+  model-key: ${MEDCOLLECT_MODEL_KEY:}
+  settings-key: ${MEDCOLLECT_SETTINGS_KEY:}
+  cdss-url: ${MEDCOLLECT_CDSS_URL:https://127.0.0.1}
+  cdss-user: ${MEDCOLLECT_CDSS_USER:}
+  cdss-password: ${MEDCOLLECT_CDSS_PASSWORD:}
+  cdss-cert-sha256: ${MEDCOLLECT_CDSS_CERT_SHA256:}
+  cdss-sync-enabled: ${MEDCOLLECT_CDSS_SYNC_ENABLED:false}
+  searx-url: ${MEDCOLLECT_SEARX_URL:}
+  private-source-hosts: ${MEDCOLLECT_PRIVATE_SOURCE_HOSTS:}
+  scheduling-enabled: ${MEDCOLLECT_SCHEDULING_ENABLED:true}

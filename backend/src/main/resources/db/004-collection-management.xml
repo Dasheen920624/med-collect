@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+  <changeSet id="004-source-authorization" author="medcollect">
+    <addColumn tableName="mc_source">
+      <column name="access_state" type="VARCHAR(12)" defaultValue="PUBLIC"><constraints nullable="false"/></column>
+    </addColumn>
+  </changeSet>
+  <changeSet id="004-task-plan" author="medcollect">
+    <addColumn tableName="mc_task">
+      <column name="schedule_mode" type="VARCHAR(12)"/>
+      <column name="schedule_at" type="NUMBER(19)"/>
+      <column name="daily_time" type="VARCHAR(5)"/>
+      <column name="select_results" type="NUMBER(1)" defaultValueNumeric="0"><constraints nullable="false"/></column>
+    </addColumn>
+  </changeSet>
+  <changeSet id="004-rollup-run-records" author="medcollect">
+    <addColumn tableName="mc_run">
+      <column name="parent_run_id" type="VARCHAR(36)"/>
+      <column name="metadata_count" type="NUMBER(9)" defaultValueNumeric="0"><constraints nullable="false"/></column>
+    </addColumn>
+  </changeSet>
+  <changeSet id="004-link-candidate-source" author="medcollect">
+    <addColumn tableName="mc_run_result">
+      <column name="source_id" type="VARCHAR(36)"/>
+    </addColumn>
+  </changeSet>
+  <changeSet id="004-task-sources" author="medcollect">
+    <sql>CREATE TABLE mc_task_source (
+        task_id VARCHAR2(36) REFERENCES mc_task(id),
+        source_id VARCHAR2(36) REFERENCES mc_source(id),
+        item_order NUMBER(3) NOT NULL,
+        PRIMARY KEY(task_id, source_id)
+      )</sql>
+  </changeSet>
+  <changeSet id="004-task-urls" author="medcollect">
+    <sql>CREATE TABLE mc_task_url (
+        task_id VARCHAR2(36) REFERENCES mc_task(id),
+        item_order NUMBER(3) NOT NULL,
+        capture_url VARCHAR2(1000 CHAR) NOT NULL,
+        PRIMARY KEY(task_id, item_order)
+      )</sql>
+  </changeSet>
+  <changeSet id="004-task-source-usage-index" author="medcollect">
+    <createIndex tableName="mc_task_source" indexName="mc_task_source_ref_ix"><column name="source_id"/></createIndex>
+  </changeSet>
+</databaseChangeLog>
