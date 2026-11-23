@@ -1,4 +1,5 @@
 <script setup>
+import BusinessLibrary from '../components/BusinessLibrary.vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { History, Play, RefreshCw, Sparkles, Upload } from '@lucide/vue'
 import { api, list, send } from '../api'
@@ -10,7 +11,7 @@ import Events from '../components/Events.vue'
 import Pagination from '../components/Pagination.vue'
 import StateBadge from '../components/StateBadge.vue'
 
-const props = defineProps({ session: Object, detail: String, subjectId: String })
+const props = defineProps({ session: Object, detail: String, subjectId: String, directory: Array })
 const emit = defineEmits(['navigate', 'notice'])
 const table = ref({ rows: [], total: 0, page: 1, size: 10 })
 const initialFilters = () => ({ query: '', mode: '', sourceId: '', enabled: '', state: '', from: '', until: '' })
@@ -34,8 +35,9 @@ const loading = ref(false)
 let poll
 const scheduleModes = { MANUAL: '手动执行', INTERVAL: '按间隔执行', ONCE: '单次定时', DAILY: '每日定时' }
 
+const businessLibrary=ref(false)
 const availableModes = computed(() => Object.fromEntries(
-  Object.entries(modes).filter(([code]) => code !== 'WEB' || props.session.webSearch),
+  Object.entries(modes).filter(([code]) => code !== 'BUSINESS' && (code !== 'WEB' || props.session.webSearch)),
 ))
 
 function taskInput(mode = 'URL') {
@@ -187,7 +189,8 @@ async function savePlan() {
 }
 
 async function applyDetail(detail) {
-  if (detail === 'new' && props.session.admin) await edit()
+  if (detail === 'business') businessLibrary.value=true
+  else if (detail === 'new' && props.session.admin) await edit(null,'URL')
   else if (detail === 'history') await showHistory()
   else if (detail?.startsWith('run:')) await openRun(detail.slice(4))
   else if (detail?.startsWith('source:')) {
@@ -229,9 +232,10 @@ function resultText(r) {
 
 <template>
   <section class="page-head">
-    <h1>知识采集管理</h1>
+    <h1>采集任务</h1>
     <div v-if="session.admin" class="actions">
-      <button class="button secondary" @click="edit(null,'URL')">指定网址下载</button>
+      <button v-if="session.cdssConfigured" class="button secondary" @click="businessLibrary=true">业务文献库</button>
+        <button class="button secondary" @click="edit(null,'URL')">指定网址下载</button>
       <button class="button secondary" @click="uploadTask = ''">手工上传</button>
       <button class="button primary" :disabled="!session.webSearch" :title="session.webSearch ? '' : '请先配置全网搜索服务'" @click="edit(null,'WEB')">全网搜索</button>
     </div>
@@ -268,7 +272,7 @@ function resultText(r) {
           <td><button v-if="task.latestRun" class="link" @click="openRun(task.latestRun.id)">{{ resultText(task.latestRun) }}</button><span v-else>—</span></td>
           <td><StateBadge :state="task.latestRun?.status || 'WAITING'" :labels="{...runStates,WAITING:'待执行'}" /></td>
           <td><div class="table-actions"><button class="link" @click="openTask(task.id)">详情</button>
-            <button v-if="session.admin" class="link" :disabled="working(task)" @click="edit(task)">编辑</button>
+            <button v-if="session.admin && task.mode!=='BUSINESS'" class="link" :disabled="working(task)" @click="edit(task)">编辑</button>
             <button v-if="session.admin" class="link" :disabled="working(task) || busy" @click="run(task)">{{ task.mode === 'UPLOAD' ? '上传' : task.selectResults ? '搜索' : '执行' }}</button>
           </div></td>
         </tr></tbody>
@@ -280,6 +284,8 @@ function resultText(r) {
   <UploadOriginal v-if="uploadTask !== null" :task-id="uploadTask" @notice="emit('notice',$event)" @close="uploadTask = null"
     @complete="uploadTask = null; load(1); openTask($event.taskId)" />
 
+  <BusinessLibrary v-if="businessLibrary" :admin="session.admin" :directory="props.directory" @close="businessLibrary=false"
+    @collected="run=>{businessLibrary=false;load();openRun(run.id)}" />
   <Drawer v-if="history" title="执行记录" wide @close="history = null">
     <div v-if="history.rows.length" class="table-wrap">
       <table><thead><tr><th>任务</th><th>执行时间</th><th>入库 / 重复 / 失败</th><th>状态</th></tr></thead>
@@ -296,7 +302,8 @@ function resultText(r) {
   <Drawer v-if="selectedTask" :title="selectedTask.task.name" subtitle="采集任务详情" wide @close="selectedTask = null">
     <dl class="metadata">
       <div><dt>采集方式</dt><dd>{{ modes[selectedTask.task.mode] }}</dd></div>
-      <div><dt>采集范围</dt><dd>{{ [...(selectedTask.sourceIds || []).map(id => sources.find(item => item.id === id)?.name),
+      <div v-if="selectedTask.task.mode === 'BUSINESS'"><dt>采集范围</dt><dd>4.23 知识管理 · {{ selectedTask.task.queryText.endsWith('/metadata') ? '来源和摘要' : '选定的文献附件' }}</dd></div>
+      <div v-else><dt>采集范围</dt><dd>{{ [...(selectedTask.sourceIds || []).map(id => sources.find(item => item.id === id)?.name),
         ...(selectedTask.urls || []), selectedTask.task.queryText].filter(Boolean).filter((item, i, all) => all.indexOf(item) === i).join(' · ') ||
         sources.find(item => item.id === selectedTask.task.sourceId)?.url || '—' }}</dd></div>
       <div><dt>执行计划</dt><dd>{{ scheduleText(selectedTask.task) }}</dd></div>
@@ -314,7 +321,7 @@ function resultText(r) {
     </section>
     <Events :events="selectedTask.events" />
     <template v-if="session.admin" #footer>
-      <button class="button secondary" :disabled="working(selectedTask.task)" @click="edit(selectedTask.task)">编辑任务</button>
+      <button v-if="selectedTask.task.mode !== 'BUSINESS'" class="button secondary" :disabled="working(selectedTask.task)" @click="edit(selectedTask.task)">编辑任务</button>
       <button class="button primary" :disabled="busy || working(selectedTask.task)" @click="run(selectedTask.task)">
         <Upload v-if="selectedTask.task.mode === 'UPLOAD'" :size="17" /><Play v-else :size="17" />
         {{ selectedTask.task.mode === 'UPLOAD' ? '上传文件' : '立即执行' }}

@@ -85,6 +85,13 @@ class CdssClient {
         throw new RemoteFailure("4.23 未返回有效知识模板");
     }
 
+    // Callers choose the read endpoint in server code. Clients only supply search terms or business keys.
+    JsonNode reference(String endpoint, Map<String, String> parameters) {
+        JsonNode envelope = form(endpoint, parameters);
+        data(envelope);
+        return envelope;
+    }
+
     JsonNode classes(String root) {
         return data(form("/knowledge/get-class-tree", Map.of("classType", "15", "upperClass", root)));
     }
@@ -198,6 +205,30 @@ class CdssClient {
             throw new RemoteFailure("4.23 附件核对已中断");
         } catch (IOException e) {
             return null;
+        }
+    }
+
+    String attachmentUrl(String path) {
+        String name=trim(path).replaceFirst("^/", "");
+        if (!name.matches("[A-Za-z0-9_./%+-]+") || !name.matches("(?:[^%]|%[a-fA-F0-9]{2})+")) throw bad("业务附件路径无效");
+        String decoded=URLDecoder.decode(name,StandardCharsets.UTF_8);
+        if(decoded.contains("..") || decoded.contains("\\") || decoded.startsWith("/")) throw bad("业务附件路径无效");
+        return baseUrl(settings.cdssUrl())+"/api/upload/view/"+name+"?preview=1";
+    }
+
+    byte[] readAttachment(String path) throws IOException {
+        var request=HttpRequest.newBuilder(URI.create(attachmentUrl(path))).timeout(Duration.ofSeconds(30))
+                .header("Authorization","Bearer "+token()).GET().build();
+        try {
+            var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
+            try(var stream=response.body()) {
+                if(response.statusCode()!=200) throw new RemoteFailure("业务附件暂时不可读取，请核对 4.23 原件");
+                byte[] bytes=stream.readNBytes(DocumentReader.MAX_BYTES+1);
+                if(bytes.length==0 || bytes.length>DocumentReader.MAX_BYTES) throw bad("原件为空或超过 20 MB");
+                return bytes;
+            }
+        } catch(InterruptedException ex) {
+            Thread.currentThread().interrupt(); throw new RemoteFailure("读取 4.23 原件已中断");
         }
     }
 

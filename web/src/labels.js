@@ -4,14 +4,14 @@ export const knowledgeStates = {
   SYNCING: '同步中', SYNC_FAILED: '同步异常', SYNCED: '已同步',
 }
 export const runStates = { RUNNING: '执行中', SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败' }
-export const modes = { URL: '指定网址下载', EUROPE_PMC: '文献检索', WEB: '全网搜索', UPLOAD: '手工上传' }
+export const modes = { URL: '指定网址下载', EUROPE_PMC: '文献检索', WEB: '全网搜索', UPLOAD: '手工上传', BUSINESS: '4.23 业务文献' }
 export const resultStates = { CAPTURED: '原文已入库', DUPLICATE: '已有记录', FAILED: '获取失败',
   CANDIDATE: '搜索结果', METADATA: '仅来源和摘要' }
 
 export const relations = {
-  icd10Ids: '标准 ICD-10 ID', diseaseIds: '疾病字典 ID', drugCodes: '药品编码', itemIds: '检验／检查字典 ID',
-  deptCode: '科室编码', countyUseId: '是否县用 ID', operationIds: '手术字典 ID', treatmentIds: '治疗字典 ID',
-  nurseIds: '护理分类 ID', ruleIds: '规则 ID',
+  icd10Ids: '标准 ICD-10', diseaseIds: '疾病', drugCodes: '药品', itemIds: '检验或检查项目',
+  deptCode: '科室', countyUseId: '是否县用', operationIds: '手术', treatmentIds: '治疗',
+  nurseIds: '护理分类', ruleIds: '关联规则',
 }
 export const actions = {
   AI_REVIEW: 'AI 预审核', CLASSIFIED: '资料分类', CREATED: '创建', UPDATED: '更新', CAPTURED: '采集入库', PARSED: '模型解析', EDITED: '保存草稿',

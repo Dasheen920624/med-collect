@@ -114,6 +114,7 @@ class SyncService {
             }
         } else {
             templates.validateClass(category, knowledge.knowledgeClass(), true);
+            workflow.validateBusinessValues(knowledge,true);
             if (reviewed) business.verifyNoMatch(knowledge, material);
             Map<String, String> form = business.createForm(knowledge, material, schema);
             cdss.prepareWrite();
@@ -155,6 +156,7 @@ class SyncService {
                 }
                 if (current.path("lockStatus").asInt() != 0) throw new CdssClient.RemoteFailure("4.23 业务知识处于锁定状态");
                 templates.validateClass(schema.category(), knowledge.knowledgeClass(), true);
+                workflow.validateBusinessValues(knowledge,true);
                 cdss.prepareWrite();
                 checkpoint(id, token, actor, "UPDATE_POSTING", remoteId, null);
                 cdss.update(remoteId, plan.form());

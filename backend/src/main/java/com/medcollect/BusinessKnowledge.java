@@ -87,6 +87,14 @@ class BusinessKnowledge {
             if (!inScope(item, draft, category)) throw conflict("关联知识的类型或类别已变化，请核对业务记录");
             return List.of(candidate(item, "已关联业务主键"));
         }
+        if ("4.23 知识管理".equals(material.sourceName()) && trim(material.externalRef()).startsWith("CDSS:")) {
+            String[] source=material.externalRef().split(" ",2)[0].split(":",-1);
+            if(source.length==4 && source[1].equals(category.type())) {
+                var original=cdss.knowledge(BusinessLiterature.key(source[2]));
+                if(inScope(original,draft,category)) return List.of(candidate(original,"已关联业务主键"));
+                throw conflict("这份业务文献的分类已变更，请核对来源后再审核");
+            }
+        }
         var scope = new LinkedHashMap<String, String>();
         scope.put("type", category.type());
         if (category.childType() != null) scope.put("childType", category.childType());
@@ -357,7 +365,7 @@ class BusinessKnowledge {
                 row.path("remark").asText(""));
     }
 
-    private static String firstDoi(String... inputs) {
+    static String firstDoi(String... inputs) {
         for (String input : inputs) {
             String value = trim(input);
             if (value.indexOf('%') >= 0) {

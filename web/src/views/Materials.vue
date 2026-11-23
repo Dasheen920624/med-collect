@@ -122,6 +122,20 @@ async function openMaterial(id, purpose = '') {
     chosen.value = { typeCode: '', knowledgeClass: '' }
     classes.value = []
     panelError.value = ''
+    if (purpose==='parse' && item.value.material.status==='APPROVED') {
+      const material=item.value.material
+      const source=material.sourceName==='4.23 知识管理' && /^CDSS:([^: ]+):[^: ]+:([^ ]*)/.exec(material.externalRef || '')
+      const marked=classifications.value.filter(n=>item.value.classificationIds?.includes(n.id) && n.enabled && n.remoteKey)
+      const domains=marked.filter(n=>n.groupCode==='DOMAIN')
+      const subjects=marked.filter(n=>n.groupCode==='SUBJECT' && n.parentId)
+      const type=source?.[1] || (domains.length===1 ? domains[0].businessCode : '')
+      if(type && categories.value.some(c=>c.code===type)) {
+        chosen.value.typeCode=type
+        await chooseType()
+        const sub=source?.[2] || (subjects.length===1 ? subjects[0].businessCode : '')
+        if(classes.value.some(n=>n.code===sub)) chosen.value.knowledgeClass=sub
+      }
+    }
   } catch (e) { error.value = e.message }
 }
 
@@ -196,11 +210,15 @@ async function applyDetail(detail) {
   if (detail === 'pending' || detail === 'approved') {
     filters.value.status = detail.toUpperCase()
     await load()
+  } else if (detail === 'ready') {
+    filters.value.status='APPROVED'; filters.value.parsed='false'; await load()
   } else if (detail === 'unparsed') {
     filters.value.parsed = 'false'
     await load()
   } else if (detail?.startsWith('upload') && props.session.admin) {
     openUpload(detail.split(':')[1])
+  } else if (detail?.startsWith('parse:')) {
+    await openMaterial(detail.slice(6),'parse')
   } else if (detail?.startsWith('class:')) {
     filters.value.classId = detail.slice(6)
     await load()
@@ -227,7 +245,7 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
 
 <template>
   <section class="page-head">
-    <h1>{{ parseOnly ? '静态知识解析' : '文献原文管理' }}</h1>
+    <h1>{{ parseOnly ? '文献解析' : '文献原文库' }}</h1>
     <div v-if="!parseOnly" class="actions"><button class="button secondary" :disabled="!selectedRows.length" @click="editClassifications(selectedRows)">批量分类</button>
       <button v-if="session.admin" class="button primary" @click="openUpload()"><Upload :size="16" /> 手工上传</button></div>
   </section>

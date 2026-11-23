@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Activity, BookOpenCheck, Cross, ChevronDown, CloudDownload, CircleUserRound, LogOut, Menu, Settings, X,
+  LayoutDashboard, Inbox, Files, ScanText, ClipboardCheck, Rss, FolderTree, ListTree,
 } from '@lucide/vue'
 import { api, login, logout, send } from './api'
 import Dashboard from './views/Dashboard.vue'
@@ -15,17 +16,18 @@ import ClassificationsView from './views/Classifications.vue'
 import TemplatesView from './views/Templates.vue'
 
 const views = [
-  { id: 'overview', name: '知识采集概览', component: Dashboard },
-  { id: 'tasks', name: '知识采集管理', component: Tasks },
-  { id: 'materials', name: '文献原文管理', component: Materials },
-  { id: 'production', name: '静态知识解析', component: Materials },
-  { id: 'knowledge', name: '知识审核管理', component: Knowledge },
-  { id: 'sources', name: '知识来源配置', component: Sources },
-  { id: 'classifications', name: '知识分类配置', component: ClassificationsView },
-  { id: 'templates', name: '知识生成模板', component: TemplatesView },
+  { id: 'overview', name: '文献采集工作台', component: Dashboard },
+  { id: 'tasks', name: '采集任务', component: Tasks },
+  { id: 'materials', name: '文献原文库', component: Materials },
+  { id: 'production', name: '文献解析', component: Materials },
+  { id: 'knowledge', name: '审核与同步', component: Knowledge },
+  { id: 'sources', name: '采集来源', component: Sources },
+  { id: 'classifications', name: '业务分类', component: ClassificationsView },
+  { id: 'templates', name: '解析模板', component: TemplatesView },
   { id: 'settings', name: '系统设置', component: SettingsView, admin: true },
   { id: 'users', name: '用户管理', component: UsersView, admin: true },
 ]
+const navIcons={overview:LayoutDashboard,tasks:Inbox,materials:Files,production:ScanText,knowledge:ClipboardCheck,sources:Rss,classifications:FolderTree,templates:ListTree}
 const session = ref()
 const loading = ref(true)
 const signingIn = ref(false)
@@ -190,16 +192,17 @@ onUnmounted(() => {
     <aside class="sidebar" :class="{ 'is-open': mobileMenu }">
       <div class="brand">
         <div class="brand-symbol"><BookOpenCheck :size="20" /></div>
-        <div><strong>医疗文献采集</strong><span>专科 · 专病 · 知识管理</span></div>
+        <div><strong>医疗文献采集</strong></div>
       </div>
-      <div class="side-section">知识中心</div>
+
       <nav aria-label="主导航">
         <button class="nav-group" :aria-expanded="collectionOpen" @click="collectionOpen = !collectionOpen">
-          <CloudDownload :size="19" /> 知识自动采集 <ChevronDown :size="15" :class="{ folded: !collectionOpen }" />
+          <CloudDownload :size="17" /> 文献工作区 <ChevronDown :size="15" :class="{ folded: !collectionOpen }" />
         </button>
         <div v-show="collectionOpen" class="nav-children">
-          <button v-for="item in views.filter(v => !v.admin)" :key="item.id" :class="{ active: selected.id === item.id }"
-            :aria-current="selected.id === item.id ? 'page' : undefined" @click="go(item.id)">{{ item.name }}</button>
+          <template v-for="item in views.filter(v=>!v.admin)" :key="item.id"><div v-if="item.id==='sources'" class="nav-divider">采集配置</div>
+          <button :class="{ active: selected.id === item.id }"
+            :aria-current="selected.id === item.id ? 'page' : undefined" @click="go(item.id)"><component :is="navIcons[item.id]" :size="16" />{{ item.name }}</button></template>
         </div>
         <template v-if="session.admin">
           <button class="nav-group admin-group" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">
@@ -214,16 +217,16 @@ onUnmounted(() => {
     </aside>
     <button v-if="mobileMenu" class="mobile-backdrop" aria-label="关闭菜单" @click="mobileMenu = false"></button>
     <div class="workspace">
-      <header class="topbar">
+      <header class="topbar" :class="{ 'clinical-topbar': hasClinicalScope }">
         <button class="icon-button mobile-toggle" aria-label="打开菜单" @click="mobileMenu = !mobileMenu"><Menu :size="22" /></button>
         <button class="link home-crumb" @click="go('overview')">医疗文献采集</button><span class="crumb-slash">/</span>
         <template v-if="hasClinicalScope">
           <label class="context-field">专科<select aria-label="全局专科切换" :value="specialty" @change="selectScope($event.target.value)">
-            <option value="">全部专科</option><option v-for="n in subjects.filter(n => !n.parentId)" :key="n.id" :value="n.id">{{ n.name }}</option>
+            <option value="">全部专科</option><option v-for="n in subjects.filter(n => !n.parentId && n.enabled)" :key="n.id" :value="n.id">{{ n.name }}</option>
             <option value="unassigned">未关联学科</option></select></label>
           <span class="crumb-slash">/</span>
           <label class="context-field">病种<select aria-label="全局病种切换" v-model="disease" :disabled="!subjects.some(n => n.parentId === specialty)">
-            <option value="">全部病种</option><option v-for="n in subjects.filter(n => n.parentId === specialty)" :key="n.id" :value="n.id">{{ n.name }}</option></select></label>
+            <option value="">全部病种</option><option v-for="n in subjects.filter(n => n.parentId === specialty && n.enabled)" :key="n.id" :value="n.id">{{ n.name }}</option></select></label>
         </template>
         <span v-else class="breadcrumb">{{ selected.name }}</span>
         <div class="top-account"><CircleUserRound :size="20" /><span>{{ session.username }}</span>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+ xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+ xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+  <changeSet id="007-classification-origin" author="medcollect">
+    <addColumn tableName="mc_classification"><column name="remote_key" type="VARCHAR2(100)"/></addColumn>
+  </changeSet>
+  <changeSet id="007-classification-origin-index" author="medcollect">
+    <createIndex tableName="mc_classification" indexName="mc_class_remote_ux" unique="true"><column name="remote_key"/></createIndex>
+  </changeSet>
+  <changeSet id="007-reference-snapshot" author="medcollect">
+    <insert tableName="mc_settings"><column name="setting_key" value="business_reference_v1"/><column name="setting_value" value="{}"/></insert>
+  </changeSet>
+</databaseChangeLog>

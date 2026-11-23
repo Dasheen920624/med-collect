@@ -68,7 +68,7 @@ onMounted(load)
 
 <template>
   <section class="page-head">
-    <h1>知识来源配置</h1>
+    <h1>采集来源</h1>
     <div class="actions"><button v-if="session.admin" class="button primary" @click="edit()"><Plus :size="16" />新增来源</button>
       <button class="button secondary" @click="history()">操作日志</button></div>
   </section>

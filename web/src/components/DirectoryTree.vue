@@ -6,7 +6,9 @@ const emit = defineEmits(['select'])
 const search = ref('')
 const closed = ref([])
 const parents = computed(() => (props.nodes || []).filter(n => !n.parentId))
-const children = id => props.nodes.filter(n => n.parentId === id)
+const byParent=computed(()=>{const map=new Map();for(const n of props.nodes || []) {if(!map.has(n.parentId)) map.set(n.parentId,[]);map.get(n.parentId).push(n)}return map})
+const children=id=>byParent.value.get(id) || []
+watch(()=>parents.value.map(n=>n.id).join(','),()=>{if(props.nodes?.length>35) closed.value=parents.value.filter(n=>n.id!==props.selected && !children(n.id).some(c=>c.id===props.selected)).map(n=>n.id)},{immediate:true})
 const matches = n => (n.name + ' ' + (n.businessCode || '')).toLowerCase().includes(search.value.trim().toLowerCase())
 const visibleRoots = computed(() => parents.value.filter(n => matches(n) || children(n.id).some(matches)))
 function toggle(id) { closed.value = closed.value.includes(id) ? closed.value.filter(i => i !== id) : [...closed.value,id] }

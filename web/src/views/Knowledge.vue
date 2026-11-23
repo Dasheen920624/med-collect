@@ -5,6 +5,8 @@ import { api, list, original, send } from '../api'
 import { date, knowledgeStates, relations } from '../labels'
 import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
+import BusinessRelation from '../components/BusinessRelation.vue'
+import BusinessProperty from '../components/BusinessProperty.vue'
 import PdfReader from '../components/PdfReader.vue'
 import Events from '../components/Events.vue'
 import KnowledgeDifferences from '../components/KnowledgeDifferences.vue'
@@ -80,7 +82,7 @@ const review = computed(() => content.value?.syncReview)
 const editable = computed(() => ['DRAFT', 'RETURNED'].includes(draft.value?.status))
 const changedFields = computed(() => editable.value && form.value && (form.value.title !== draft.value.title
   || form.value.summary !== (draft.value.summary || '') || JSON.stringify(form.value.fields) !== JSON.stringify(draft.value.fields)
-  || Object.entries(form.value.relations).some(([k,v]) => v !== (draft.value.relations[k] || []).join('\n'))))
+  || Object.entries(form.value.relations).some(([k,v]) => JSON.stringify(v) !== JSON.stringify(draft.value.relations[k] || []))))
 const otherFields = computed(() => draft.value?.schema.fields.filter(field => field.id !== draft.value.schema.summaryKey) || [])
 const canSync = computed(() => ['APPROVED', 'SYNC_FAILED'].includes(draft.value?.status)
   || (draft.value?.status === 'SYNCING' && draft.value.syncLease < Date.now()))
@@ -120,7 +122,7 @@ function setDraft(data, resetNote) {
   const knowledge = data.knowledge
   form.value = {
     title: knowledge.title, summary: knowledge.summary || '', fields: { ...knowledge.fields },
-    relations: Object.fromEntries(Object.entries(knowledge.relations).map(([key, values]) => [key, values.join('\n')])),
+    relations: Object.fromEntries(Object.entries(knowledge.relations).map(([key, values]) => [key, [...values]])),
   }
   if (resetNote) note.value = ''
 }
@@ -206,11 +208,7 @@ function snapshotText(snapshot) {
 }
 
 async function persist() {
-  const relationInput = Object.fromEntries(Object.entries(form.value.relations)
-    .map(([key, text]) => [key, text.split(/[\s,，;；]+/).filter(Boolean)]))
-  const data = await send('/knowledge/' + draft.value.id, {
-    ...form.value, relations: relationInput, revision: draft.value.revision,
-  }, 'PUT')
+  const data = await send('/knowledge/' + draft.value.id, { ...form.value, revision:draft.value.revision }, 'PUT')
   return data.revision
 }
 
@@ -297,7 +295,7 @@ watch(() => props.detail, applyDetail)
 
 <template>
   <section class="page-head">
-    <h1>知识审核管理</h1>
+    <h1>审核与同步</h1>
   </section>
   <p v-if="issue" class="message error" role="alert">{{ issue }}</p>
   <section class="panel">
@@ -377,7 +375,8 @@ watch(() => props.detail, applyDetail)
         <div class="form-grid inset">
           <label v-for="field in otherFields.filter(field => editable || draft.fields[field.id])" :key="field.id">
             {{ field.label }}{{ draft.schema.rules?.[field.id]?.required ? '（必填）' : '' }}
-            <input v-if="field.property" v-model="form.fields[field.id]" maxlength="12000" :readonly="!editable" />
+            <BusinessProperty v-if="field.dictionary" :dictionary="field.dictName || draft.schema.layout.properties.find(p=>p.id===field.id)?.dictName" :label="field.label" v-model="form.fields[field.id]" :editable="editable" />
+            <input v-else-if="field.property" v-model="form.fields[field.id]" maxlength="12000" :readonly="!editable" />
             <textarea v-else v-model="form.fields[field.id]" rows="3" maxlength="12000" :readonly="!editable"></textarea>
           </label>
         </div>
@@ -385,10 +384,8 @@ watch(() => props.detail, applyDetail)
       <details v-if="draft.schema.category.relations.length" class="raw-text">
         <summary>关联业务字典</summary>
         <div class="form-grid inset">
-          <label v-for="key in draft.schema.category.relations" :key="key">
-            {{ relations[key] || key }}
-            <textarea v-model="form.relations[key]" rows="2" :readonly="!editable" placeholder="每行填写一个 4.23 字典 ID 或编码"></textarea>
-          </label>
+          <BusinessRelation v-for="key in draft.schema.category.relations" :key="draft.id+'/'+key" :type="draft.typeCode" :relation="key"
+            :label="relations[key] || key" v-model="form.relations[key]" :editable="editable" />
         </div>
       </details>
     </form>

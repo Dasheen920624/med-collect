@@ -15,7 +15,7 @@ import jakarta.validation.constraints.Size;
 final class Records {
     private Records() {}
 
-    enum Mode { URL, EUROPE_PMC, WEB, UPLOAD }
+    enum Mode { URL, EUROPE_PMC, WEB, UPLOAD, BUSINESS }
     enum CaptureMode { SINGLE, LINKS }
     enum ScheduleMode { MANUAL, INTERVAL, ONCE, DAILY }
     enum AccessState { PUBLIC, PENDING, AUTHORIZED }

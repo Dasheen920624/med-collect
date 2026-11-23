@@ -21,7 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 class Classifications {
     enum Group { SUBJECT, DOMAIN, MATERIAL }
     record Node(String id, Group groupCode, String name, String parentId, String businessCode,
-                int displayOrder, boolean enabled, int revision, long materialCount, long knowledgeCount) {}
+                int displayOrder, boolean enabled, int revision, long materialCount, long knowledgeCount, String remoteKey) {}
     record Input(@NotNull Group groupCode, @NotBlank @Size(max = 120) String name,
                  @Size(max = 36) String parentId, @Size(max = 80) String businessCode,
                  @Min(0) @Max(999999) int displayOrder, boolean enabled, Integer revision) {}
@@ -75,6 +75,7 @@ class Classifications {
     Node save(String id, Input input, String actor) {
         lock();
         Node current = id == null ? null : node(id);
+        if (current != null && current.remoteKey() != null) throw bad("此分类由 4.23 同步，请在业务系统维护");
         String parentId = trim(input.parentId()).isEmpty() ? null : input.parentId().strip();
         if (input.groupCode() == Group.MATERIAL && parentId != null) throw bad("资料类型使用一级目录");
         if (current != null && current.groupCode() != input.groupCode()) throw bad("既有分类的维度不可修改");
@@ -119,7 +120,8 @@ class Classifications {
     void move(String id, Move input, String actor) {
         lock();
         Node current = node(id);
-        var siblings = new java.util.ArrayList<>(nodes().stream().filter(n -> n.groupCode() == current.groupCode()
+        if (current.remoteKey() != null) throw bad("业务目录按 4.23 的顺序显示");
+        var siblings = new java.util.ArrayList<>(nodes().stream().filter(n -> n.remoteKey() == null && n.groupCode() == current.groupCode()
                 && Objects.equals(n.parentId(), current.parentId())).toList());
         int index = java.util.stream.IntStream.range(0, siblings.size()).filter(i -> siblings.get(i).id().equals(id))
                 .findFirst().orElseThrow(() -> conflict("目录已变化，请刷新后重试"));
@@ -170,7 +172,7 @@ class Classifications {
                 .param("id", id).query(Long.class).single();
     }
 
-    private void lock() {
+    void lock() {
         store.db().sql("SELECT setting_key FROM mc_settings WHERE setting_key = 'collection_classifications' FOR UPDATE")
                 .query(String.class).single();
     }

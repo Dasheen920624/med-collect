@@ -25,6 +25,7 @@ class KnowledgeWorkflow {
     private final DocumentReader reader;
     private final ObjectMapper json;
     private final CdssClient cdss;
+    private final BusinessDictionaries dictionaries;
     private final TransactionTemplate transactions;
 
     record Detail(String id, String materialId, String title, String typeCode, String knowledgeClass,
@@ -34,13 +35,14 @@ class KnowledgeWorkflow {
                   Long syncLease, String syncError, String updateTargetId) {}
 
     KnowledgeWorkflow(Store store, TemplateProfiles templates, ModelService model, DocumentReader reader,
-                      ObjectMapper json, CdssClient cdss, TransactionTemplate transactions) {
+                      ObjectMapper json, CdssClient cdss, TransactionTemplate transactions, BusinessDictionaries dictionaries) {
         this.store = store;
         this.templates = templates;
         this.model = model;
         this.reader = reader;
         this.json = json;
         this.cdss = cdss;
+        this.dictionaries = dictionaries;
         this.transactions = transactions;
     }
 
@@ -86,6 +88,7 @@ class KnowledgeWorkflow {
     Detail create(String materialId, DraftInput request, String actor) {
         Material material = store.material(materialId);
         if (material.status() != MaterialStatus.APPROVED) throw conflict("请先完成原文审核");
+        templates.availableForCollection(request.typeCode());
         var schema = templates.schema(request.typeCode(), request.knowledgeClass());
         String id = request.requestId() == null ? id() : request.requestId().toString();
         if (request.requestId() != null) {
@@ -163,6 +166,7 @@ class KnowledgeWorkflow {
                 input.fields() == null ? Map.of() : input.fields());
         var cleanRelations = validateRelations(schema(knowledge).category(),
                 input.relations() == null ? Map.of() : input.relations());
+        if (cdss.configured()) dictionaries.validate(schema(knowledge),cleanFields,cleanRelations,false);
         changed(store.db().sql("""
                 UPDATE mc_knowledge SET title = :title, summary = :summary, fields_json = :fields,
                   relations_json = :relations, revision = revision + 1, updated_at = :now
@@ -179,6 +183,7 @@ class KnowledgeWorkflow {
         Knowledge existing = store.knowledge(id);
         requireText(existing.summary(), "请填写摘要后再提交审核");
         var schema = schema(existing);
+        validateBusinessValues(existing,false);
         if (!store.material(existing.materialId()).pdf() && !schema.rules().isEmpty()) {
             var values = fields(existing);
             for (var field : schema.fields()) {
@@ -231,6 +236,10 @@ class KnowledgeWorkflow {
                 .param("id", id).param("revision", revision).update());
         store.event("KNOWLEDGE", id, next.name(), actor, note);
         return detail(id);
+    }
+
+    void validateBusinessValues(Knowledge k,boolean fresh) {
+        if (cdss.configured()) dictionaries.validate(schema(k),fields(k),relations(k),fresh);
     }
 
     KnowledgeTemplates.Schema schema(Knowledge knowledge) {

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { Plus, Search } from '@lucide/vue'
+import { Plus, RefreshCw, Search } from '@lucide/vue'
 import { api, send } from '../api'
 import DirectoryTree from '../components/DirectoryTree.vue'
 import Pagination from '../components/Pagination.vue'
@@ -12,6 +12,13 @@ const props = defineProps({ session: Object })
 const emit = defineEmits(['notice', 'navigate', 'directory-changed', 'scope'])
 const groups = { SUBJECT: '学科病种目录', DOMAIN: '知识类别目录', MATERIAL: '资料类型' }
 const nodes = ref([])
+const reference=ref(null)
+const refreshing=ref(false)
+async function refreshReference() {
+  refreshing.value=true; error.value=''
+  try {reference.value=await send('/business-catalog/refresh',{}); await load(); emit('directory-changed');emit('notice','已更新 4.23 业务资料')}
+  catch(e){error.value=e.message}finally{refreshing.value=false}
+}
 const group = ref('SUBJECT')
 const query = ref('')
 const form = ref(null)
@@ -36,7 +43,7 @@ const visible = computed(() => rows.value.slice((page.value-1)*size.value,page.v
 watch(group, () => { selected.value = ''; query.value = ''; page.value = 1 })
 watch([selected,query], () => { page.value = 1 })
 function adjacent(node, offset) {
-  const siblings = siblingsOf(node)
+  const siblings = siblingsOf(node).filter(n=>!n.remoteKey)
   return siblings[siblings.findIndex(n => n.id === node.id)+offset]
 }
 async function move(node,offset) {
@@ -63,7 +70,7 @@ function active(node) { return node.enabled && (!node.parentId || nodes.value.fi
 
 async function load() {
   try {
-    nodes.value = await api('/classifications')
+    const [items,state]=await Promise.all([api('/classifications'),api('/business-catalog')]); nodes.value=items; reference.value=state
     error.value = ''
   } catch (e) { error.value = e.message }
 }
@@ -94,23 +101,26 @@ onMounted(load)
 
 <template>
   <section class="page-head">
-    <h1>知识分类配置</h1>
+    <h1>业务分类</h1>
     <div class="tab-buttons"><button v-for="(name,k) in groups" :key="k" :aria-pressed="group===k" @click="group=k">{{ name }}</button></div>
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
+  <section v-if="reference" class="reference-strip"><div><strong>4.23 业务目录</strong><small>{{ reference.syncedAt ? '更新于 '+new Date(reference.syncedAt).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}) : '尚无同步记录' }} · {{ reference.specialties }} 个专科 · {{ reference.diseases }} 个病种</small></div>
+    <button v-if="session.admin && reference.configured" class="button secondary" :disabled="refreshing" @click="refreshReference"><RefreshCw :size="15"/>{{ refreshing?'正在同步…':'同步业务资料' }}</button></section>
+  <p v-if="reference?.error" class="message error">{{ reference.error }}</p>
   <div class="directory-layout">
     <DirectoryTree :key="group" :title="groups[group]" :nodes="groupNodes" :all-label="group === 'SUBJECT' ? '全部学科' : '全部分类'"
       :selected="selected" @select="selected=$event;query=''" />
     <section class="panel"><div class="panel-head"><h2>{{ current?.name || groups[group] }}</h2>
       <button v-if="props.session.admin" class="button primary" @click="edit()"><Plus :size="16" />{{ group==='SUBJECT' ? (selected ? '新增病种' : '新增学科') : '新增分类' }}</button></div>
       <div class="filters"><label class="search"><Search :size="15" /><input v-model.trim="query" placeholder="搜索分类名称或编码" aria-label="搜索分类" /></label></div>
-      <div v-if="rows.length" class="table-wrap"><table><thead><tr><th>序号</th><th>名称</th><th>子项</th><th>对应编码</th><th>状态</th><th>使用情况</th><th>操作</th></tr></thead>
+      <div v-if="rows.length" class="table-wrap"><table><thead><tr><th>序号</th><th>名称</th><th>子项</th><th>编码 / 来源</th><th>状态</th><th>使用情况</th><th>操作</th></tr></thead>
         <tbody><tr v-for="(node,i) in visible" :key="node.id"><td>{{ (page-1)*size+i+1 }}</td>
           <td><button class="link" @click="selected=node.id;query=''">{{ node.name }}</button></td>
-          <td>{{ groupNodes.filter(n => n.parentId === node.id).length }}</td><td>{{ node.businessCode || '—' }}</td>
+          <td>{{ groupNodes.filter(n => n.parentId === node.id).length }}</td><td>{{ node.businessCode || '—' }}<small class="subline">{{ node.remoteKey ? '4.23 业务目录' : '采集端维护' }}</small></td>
           <td><StateBadge :state="active(node) ? 'ACTIVE' : 'OFF'" :labels="{ACTIVE:'启用',OFF:node.enabled ? '上级停用' : '停用'}" /></td>
           <td><button class="link" @click="showMaterials(node)">{{ node.materialCount }} 份原文</button> / {{ node.knowledgeCount }} 条知识</td>
-          <td><div v-if="props.session.admin" class="table-actions"><button class="link" @click="edit(node)">编辑</button>
+          <td><span v-if="node.remoteKey" class="muted">随业务同步</span><div v-else-if="props.session.admin" class="table-actions"><button class="link" @click="edit(node)">编辑</button>
             <button class="link" :disabled="busy" @click="toggle(node)">{{ node.enabled ? '停用' : '启用' }}</button>
             <button class="link" :disabled="busy || !adjacent(node,-1)" @click="move(node,-1)">上移</button><button class="link" :disabled="busy || !adjacent(node,1)" @click="move(node,1)">下移</button></div></td>
         </tr></tbody></table></div>

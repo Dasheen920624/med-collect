@@ -33,6 +33,8 @@ class TemplateProfiles {
         this.model = model;
     }
 
+    void availableForCollection(String code) { templates.availableForCollection(code); }
+
     KnowledgeTemplates.Schema schema(String code, String knowledgeClass) {
         var base = templates.schema(code, knowledgeClass);
         return store.db().sql("SELECT rules_json, revision FROM mc_template_profile WHERE profile_key = :key")

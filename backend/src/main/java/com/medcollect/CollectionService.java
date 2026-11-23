@@ -171,6 +171,9 @@ class CollectionService {
             if (query.isBlank() && sourceId == null) throw bad("请输入采集网址或选择资料来源");
             if (!query.isBlank()) query = httpUri(query).toString();
             if (query.length() > 1000) throw bad("资料地址超过 1000 字符");
+        } else if (input.mode() == Mode.BUSINESS) {
+            if (!query.matches("[A-Za-z0-9_-]{1,80}/[A-Za-z0-9_-]{1,80}") || sourceId!=null || !sourceIds.isEmpty()
+                    || input.captureMode()!=CaptureMode.SINGLE || input.resultLimit()!=1) throw bad("请从业务文献选择来源记录");
         } else if (input.mode() == Mode.UPLOAD) {
             if (sourceIds.size() > 1) throw bad("手工上传请选择一个资料来源");
         } else {

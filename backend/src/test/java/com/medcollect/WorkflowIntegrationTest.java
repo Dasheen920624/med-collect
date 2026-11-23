@@ -71,6 +71,8 @@ class WorkflowIntegrationTest {
     private static final String OLD_VERSION_FILE = "knowledge-affix/older-reference.pdf";
     private static final String NEW_VERSION_FILE = "knowledge-affix/revised-paper.pdf";
     private static final AtomicReference<byte[]> REVISED_PDF = new AtomicReference<>();
+    private static volatile boolean referenceFailure;
+    private static final String LIBRARY_ARTICLE = "fixture-literature-paper";
     private static final String TARGET_ID = "target-knowledge-id";
     private static final String TARGET_FILE = "/knowledge-affix/synthetic.pdf";
     private static final HttpServer REMOTE = remote();
@@ -524,6 +526,66 @@ class WorkflowIntegrationTest {
         assertThat(getBody("/api/tasks?query=Paged").path("rows").get(0).path("latestRun").path("candidateCount").asInt()).isEqualTo(50);
     }
 
+    @Test
+    void synchronizesReferenceDataAndVerifiesBusinessSelections() throws Exception {
+        mvc.perform(post("/api/business-catalog/refresh").with(user("reader").roles("REVIEWER")).with(csrf()))
+                .andExpect(status().isForbidden());
+        var state=adminPost("/api/business-catalog/refresh",Map.of());
+        assertThat(state.path("specialties").asInt()).isOne();
+        assertThat(state.path("diseases").asInt()).isOne();
+        var nodes=getBody("/api/classifications");
+        assertThat(nodes.findValuesAsText("remoteKey")).contains("SUBJECT:1701","SUBJECT:170103","DOMAIN:31");
+        assertThat(getBody("/api/categories/1/classes").findValuesAsText("code")).contains("01").doesNotContain("17");
+        var stable=store.db().sql("SELECT id FROM mc_classification WHERE remote_key='SUBJECT:170103'").query(String.class).single();
+        assertThat(stable).isEqualTo("subject-hypertension");
+        adminPost("/api/business-catalog/refresh",Map.of());
+        assertThat(store.db().sql("SELECT revision FROM mc_classification WHERE id=:id").param("id",stable)
+                .query(Integer.class).single()).isEqualTo(2);
+        referenceFailure=true;
+        try {
+            mvc.perform(post("/api/business-catalog/refresh").with(user("collector").roles("ADMIN")).with(csrf()))
+                    .andExpect(status().isBadGateway());
+            assertThat(getBody("/api/business-catalog").path("diseases").asInt()).isOne();
+        } finally {referenceFailure=false;}
+        var options=getBody("/api/business-catalog/relations/1/icd10Ids?query=Test");
+        assertThat(options.path("rows").get(0).path("value").asText()).isEqualTo("fixture-icd");
+        assertThat(getBody("/api/business-catalog/parameters/YES_NOT_DICT").get(0).path("value").asText()).isEqualTo("1");
+        var added=body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file","relation.txt","text/plain",
+                "Dictionary verification".getBytes(StandardCharsets.UTF_8))).with(user("collector").roles("ADMIN")).with(csrf())));
+        String source=added.path("materialId").asText();
+        postBody("/api/materials/"+source+"/decision",Map.of("revision",1,"approved",true,"sourceAbstract","Reviewed source"));
+        var draft=postBody("/api/materials/"+source+"/drafts",Map.of("typeCode","1","useAi",false));
+        String path="/api/knowledge/"+draft.path("id").asText();
+        for (String rel:List.of("missing-icd","fixture-icd")) {
+            var payload=Map.of("revision",1,"title","Test","summary","Reviewed","fields",Map.of("heredity","1"),
+                    "relations",Map.of("icd10Ids",List.of(rel)));
+            var req=put(path).with(user("reviewer").roles("REVIEWER")).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsBytes(payload));
+            if(rel.startsWith("missing")) mvc.perform(req).andExpect(status().isBadRequest());
+            else assertThat(body(mvc.perform(req)).path("relations").path("icd10Ids").get(0).asText()).isEqualTo(rel);
+        }
+    }
+
+    @Test
+    void collectsBusinessLiteratureThroughTheNormalRunAndKeepsReviewPending() throws Exception {
+        var detail=getBody("/api/business-literature/"+LIBRARY_ARTICLE);
+        assertThat(detail.path("summary").asText()).isEqualTo("Source abstract");
+        assertThat(detail.path("attachments").get(0).path("name").asText()).isEqualTo("journal.txt");
+        var request="/api/business-literature/"+LIBRARY_ARTICLE+"/collect";
+        mvc.perform(post(request).contentType(MediaType.APPLICATION_JSON).content("{\"attachmentId\":\"wrong\"}")
+                .with(user("collector").roles("ADMIN")).with(csrf())).andExpect(status().isBadRequest());
+        for(int attempt=0;attempt<2;attempt++) {
+            var run=adminPost(request,Map.of("attachmentId","journal-file"));
+            var finished=await("/api/runs/"+run.path("id").asText(),"run","SUCCEEDED");
+            assertThat(finished.path(attempt==0?"newCount":"duplicateCount").asInt()).isOne();
+            var result=getBody("/api/runs/"+run.path("id").asText()).path("results").get(0);
+            var material=store.material(result.path("materialId").asText());
+            assertThat(material.externalRef()).startsWith("CDSS:31:"+LIBRARY_ARTICLE+":170103");
+            assertThat(material.status()).isEqualTo(Records.MaterialStatus.PENDING);
+            assertThat(store.bytes(material)).isEqualTo("Native literature".getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
     private JsonNode adminPost(String endpoint, Object payload) throws Exception {
         var request = post(endpoint).with(user("collector").roles("ADMIN")).with(csrf());
         if (payload != null) request.contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(payload));
@@ -592,6 +654,10 @@ class WorkflowIntegrationTest {
                         exchange.getResponseBody().write(page);
                         return;
                     }
+                    if (path.equals("/api/upload/view/knowledge-affix/journal.txt")) {
+                        byte[] bytes="Native literature".getBytes(StandardCharsets.UTF_8);
+                        exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);return;
+                    }
                     if (path.equals("/api/upload/view/" + NEW_VERSION_FILE)) {
                         byte[] bytes = REVISED_PDF.get();
                         exchange.sendResponseHeaders(200, bytes.length);
@@ -616,8 +682,18 @@ class WorkflowIntegrationTest {
                                 yield ok(Map.of("parameterValue", new String(in.readAllBytes(), StandardCharsets.UTF_8)));
                             }
                         }
-                        case "/api/knowledge/get-class-tree" -> ok(java.util.List.of(
-                                Map.of("knowledgeClass", "17", "knowledgeClassName", "临床指南知识", "upperClass", "00")));
+                        case "/api/knowledge/get-statistics-by-status" -> ok(List.of(Map.of("itemClass","1","itemName","疾病知识"),
+                                Map.of("itemClass","6","itemName","药品说明书"),Map.of("itemClass","17","itemName","临床指南")));
+                        case "/api/knowledge/get-class-tree" -> ok(referenceFailure?List.of():List.of(
+                                Map.of("knowledgeClass","01","knowledgeClassName","疾病","upperClass","00"),
+                                Map.of("knowledgeClass","17","knowledgeClassName","临床指南知识","upperClass","00"),
+                                Map.of("knowledgeClass","1701","knowledgeClassName","心血管内科","upperClass","17"),
+                                Map.of("knowledgeClass","170103","knowledgeClassName","高血压","upperClass","1701")));
+                        case "/api/dict/findMapPage" -> ok(List.of(Map.of("code","1","name","是","id","fixture-one","validFlag",1)));
+                        case "/api/knowledge-dict/icd10/query" -> Map.of("code",0,"success",true,"total",1,"data",
+                                List.of(Map.of("id","fixture-icd","name","Test condition","code","T01","source","国家临床版2.0","validFlag",1)));
+                        case "/api/knowledge-dict/icd10/find-by-id" -> ok("fixture-icd".equals(form(request).get("id"))?
+                                Map.of("id","fixture-icd","name","Test condition","code","T01","source","国家临床版2.0","validFlag",1):Map.of());
                         case "/v1/chat/completions" -> {
                             MODEL_REQUEST.set(new String(request, StandardCharsets.UTF_8));
                             if (MODEL_REQUEST.get().contains("findings")) {
@@ -650,6 +726,8 @@ class WorkflowIntegrationTest {
                         case "/api/knowledge/query" -> queryBusiness(form(request));
                         case "/api/knowledge/find-by-id" -> {
                             String id = form(request).get("id");
+                            if(LIBRARY_ARTICLE.equals(id)) yield ok(Map.of("id",id,"type","31","knowledgeClass","170103",
+                                    "validFlag",1,"name","Native journal","content",Map.of("content",Map.of("abstract","Source abstract"))));
                             yield ok(TARGET_ID.equals(id) ? saved() : BUSINESS_RECORDS.get(id));
                         }
                         case "/api/upload" -> {
@@ -662,6 +740,7 @@ class WorkflowIntegrationTest {
                         }
                         case "/api/knowledge/query-affix" -> {
                             String id = form(request).get("knowledgeId");
+                            if(LIBRARY_ARTICLE.equals(id)) yield ok(List.of(Map.of("id","journal-file","knowledgeAffix","knowledge-affix/journal.txt","affixName","journal.txt")));
                             var urls = TARGET_ID.equals(id) ? List.copyOf(AFFIXES.values()) : BUSINESS_AFFIXES.getOrDefault(id, List.of());
                             yield ok(urls.stream().map(url -> Map.of("knowledgeAffix", url)).toList());
                         }

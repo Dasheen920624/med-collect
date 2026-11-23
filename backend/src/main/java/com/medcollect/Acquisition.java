@@ -27,10 +27,14 @@ class Acquisition {
     private final AppSettings settings;
     private final Clock clock;
 
-    record Candidate(String title, String url, JsonNode article) {}
+    private final BusinessLiterature business;
+    record Candidate(String title,String url,JsonNode article,String businessRef) {
+        Candidate(String title,String url,JsonNode article) { this(title,url,article,null); }
+    }
     record Result(Acquired material, String note) {}
 
-    Acquisition(SourceHttp http, DocumentReader reader, ObjectMapper json, AppSettings settings, Clock clock) {
+    Acquisition(SourceHttp http, DocumentReader reader, ObjectMapper json, AppSettings settings, Clock clock, BusinessLiterature business) {
+        this.business = business;
         this.http = http;
         this.reader = reader;
         this.json = json;
@@ -43,6 +47,7 @@ class Acquisition {
             case URL -> fromUrl(task, target);
             case EUROPE_PMC -> fromLiterature(task);
             case WEB -> fromWeb(task, source);
+            case BUSINESS -> List.of(new Candidate(task.name(),business.urlFor(task.queryText()),null,task.queryText()));
             case UPLOAD -> throw bad("手工上传任务请选择原件文件");
         };
     }
@@ -121,6 +126,7 @@ class Acquisition {
     }
 
     Result acquire(Candidate candidate, Source source) throws IOException {
+        if (candidate.businessRef()!=null) return business.acquire(candidate.businessRef());
         if (candidate.article() != null) return acquireArticle(candidate);
         SourceHttp.Download download = http.get(candidate.url());
         String fileName = nameFrom(download.uri());

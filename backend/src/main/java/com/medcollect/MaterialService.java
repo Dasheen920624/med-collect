@@ -28,12 +28,28 @@ class MaterialService {
     Registration register(Acquired input, String actor, String runId, String observation) {
         String sha256 = sha(input.bytes());
         String identity = trim(input.sourceUrl());
-        String version = "METADATA".equals(input.formatCode())
+        boolean business = "4.23 知识管理".equals(input.sourceName()) && trim(input.externalRef()).startsWith("CDSS:");
+        String version = business ? sha(sha256+"\n"+input.externalRef()+"\n"+input.title()+"\n"+trim(input.sourceAbstract()))
+                : "METADATA".equals(input.formatCode())
                 ? sha(trim(input.title()) + "\n" + trim(input.sourceAbstract()) + "\n" + trim(input.externalRef()))
                 : sha256;
         String fingerprint = sha(input.formatCode() + "\n" + identity + "\n" + version);
         try {
             return transactions.execute(tx -> {
+                if(business && !"METADATA".equals(input.formatCode())) {
+                    String[] link=input.externalRef().split(" ",2)[0].split(":",-1);
+                    if(link.length==4) {
+                        var matches=store.db().sql("""
+                                SELECT m.id, k.title, k.summary FROM mc_knowledge k JOIN mc_material m ON m.id=k.material_id
+                                WHERE k.remote_id=:remote AND k.status='SYNCED' AND m.sha256=:sha AND k.type_code=:kind
+                                AND (k.knowledge_class=:classCode OR (k.knowledge_class IS NULL AND :classCode IS NULL))
+                                ORDER BY k.updated_at DESC
+                                """).param("remote",link[2]).param("sha",sha256).param("kind",link[1])
+                                .param("classCode",link[3],Types.VARCHAR).query(ReviewedSource.class).list();
+                        for(var known:matches) if(known.title().equals(input.title()) && normalized(known.summary()).equals(normalized(input.sourceAbstract())))
+                            return duplicate(input,runId,observation,known.id());
+                    }
+                }
                 var existing = store.existingMaterial(fingerprint);
                 if (existing.isPresent()) return duplicate(input, runId, observation, existing.get());
                 String id = id();
@@ -58,6 +74,16 @@ class MaterialService {
                           :authors, :publisher, :published, :external, :abstract, 'PENDING', :captured, 1)
                         """).paramSource(vars).update();
                 store.saveOriginal(id, input);
+                if (business) {
+                    String[] source=input.externalRef().split(" ",2)[0].split(":",-1);
+                    if (source.length==4) store.db().sql("""
+                            INSERT INTO mc_material_class (material_id,class_id)
+                            SELECT DISTINCT :id,c.id FROM mc_classification c WHERE c.enabled=1 AND
+                            (c.remote_key IN (:domain,:medium,:subject) OR c.id IN
+                                (SELECT parent_id FROM mc_classification WHERE remote_key=:subject AND enabled=1))
+                            """).param("id",id).param("domain","DOMAIN:"+source[1]).param("medium","MATERIAL:"+source[1])
+                            .param("subject","SUBJECT:"+source[3]).update();
+                }
                 store.event("MATERIAL", id, "CAPTURED", actor, input.sourceUrl());
                 result(runId, id, input.title(), input.sourceUrl(),
                         "METADATA".equals(input.formatCode()) ? "METADATA" : "CAPTURED", observation);
@@ -68,6 +94,9 @@ class MaterialService {
                     store.existingMaterial(fingerprint).orElseThrow(() -> e)));
         }
     }
+
+    private record ReviewedSource(String id,String title,String summary) {}
+    private String normalized(String value) { return trim(value).replaceAll("\\s+"," "); }
 
     private Registration duplicate(Acquired input, String runId, String observation, String materialId) {
         result(runId, materialId, input.title(), input.sourceUrl(), "DUPLICATE", observation);

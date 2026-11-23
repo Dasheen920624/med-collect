@@ -102,7 +102,7 @@ docker exec med-collect-app-1 curl --noproxy '*' -fsSG --max-time 18 http://sear
     python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["results"]), d["unresponsive_engines"])'
 ~~~
 
-在「知识采集管理」用管理员账号新建手动「全网搜索」任务，勾选「先搜索，再人工选择结果采集」。搜索得到候选后选一条公开全文，检查采集回执关联到该次搜索，原文可下载，并保留在待审状态。`unresponsive_engines` 可用于定位出网失败的上游，候选需要能访问发布页或合法公开的原件地址。[SearXNG Search API](https://docs.searxng.org/dev/search_api.html)
+在「采集任务」用管理员账号新建手动「全网搜索」任务，勾选「先搜索，再人工选择结果采集」。搜索得到候选后选一条公开全文，检查采集回执关联到该次搜索，原文可下载，并保留在待审状态。`unresponsive_engines` 可用于定位出网失败的上游，候选需要能访问发布页或合法公开的原件地址。[SearXNG Search API](https://docs.searxng.org/dev/search_api.html)
 
 当前启用 Bing、ChinaSo 和 Crossref。验收关键词从 Bing 和 Crossref 返回结果，论文候选来自 Crossref。为保留发布方网址，SearXNG 关闭了默认的 DOI 网址改写。SearXNG 内的 Europe PMC 和 PubMed 因现场上游请求超时暂停启用。采集系统的独立 Europe PMC 检索模式沿用原有配置。
 
@@ -136,7 +136,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.5'
+$version = '0.1.6'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)
@@ -208,6 +208,18 @@ JAR 应包含 `BOOT-INF/classes/static/index.html` 和 Vue assets。应用镜像
 ~~~
 
 基础镜像取自 Eclipse Temurin 官方 Docker 仓库的 Linux amd64 清单。服务器直拉超时后，从构建机下载并核对清单、镜像配置和各层的 SHA-256，经 SSH 传至服务器。现网沿用 CentOS 7 上已验证的本地 Docker 构建方式。基础镜像更新时按摘要核验新镜像和 Java 版本，并在切换前用新镜像执行应用验收。[Temurin 容器镜像](https://adoptium.net/installation/containers/) · [Compose 启动与健康等待](https://docs.docker.com/reference/cli/docker/compose/up/)
+
+## 0.1.6 业务资料与文献选采
+
+在「业务分类」点击「同步业务资料」。该操作只读访问业务端，向采集 Oracle 写入目录、提取模板和参数字典快照。启用采集调度时，应用启动后检查快照，此后每六小时检查更新。上游接口失败时保留上一次完整快照，页面显示同步时间及错误。更新在同一数据库事务内完成，按业务编码复用原分类 ID，保留本地分类和历史引用。已从业务系统移除的分类停用。已经人工通过或已同步的知识能按确定的业务类别补全原文归属，已有人工分类优先。
+
+接手时先核对健康状态，再从「业务分类」检查来源标记和同步时间。使用采集账号查询 `GET /api/business-catalog`，核对当前授权类型、专科、病种、模板和参数字典数。「解析模板」可查看同步的字段和业务子类。ICD-10、药品、检验、检查等大字典按需搜索，保留 4.23 保存接口要求的 ID 或编码。新建和更新业务知识前再次核验已选值。业务账号权限变更后，管理员可手动同步。
+
+在「采集任务 → 业务文献库」选择期刊、指南或书籍，按标题或子类查询，打开任意结果查看来源、当前摘要和附件。选择一份原件或「仅采集来源和摘要」，点击「采集到原文库」产生执行回执。此入口取得的原件沿用同一服务器文件卷，新的资料进入原文核验队列。再次取得相同版本会返回重复回执，审核通过后才可回写知识。两个方向使用独立入口及会话权限。
+
+Liquibase 的 `007-business-catalog.xml` 包含分类来源列、唯一索引和快照设置。正式切换时可先用同镜像的临时容器连接 Oracle，关闭采集调度和 4.23 写入，运行目录同步并核对既有资料。临时容器回读正式原件时，可将已存在的原件分片只读挂载在可写的临时根目录下。采集原件的演练使用单独数据库和可写原件卷。
+
+回退到 0.1.5 前检查 `SELECT COUNT(*) FROM mc_task WHERE collection_mode='BUSINESS'`。0.1.5 无法识别业务文献来源任务。如果数量大于零，保留本版数据库并使用支持 BUSINESS 的修复镜像，或配合已验证的上线前数据库及文件备份整体恢复。旧版运行期间暂停分类维护。恢复新版后核对目录快照、任务回执和未完成的知识审核。
 
 ## 0.1.5 工作台验收与回滚
 

@@ -102,7 +102,7 @@ onMounted(async () => {
 
 <template>
   <section class="page-head">
-    <h1>知识生成模板</h1>
+    <h1>解析模板</h1>
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
   <section class="panel">

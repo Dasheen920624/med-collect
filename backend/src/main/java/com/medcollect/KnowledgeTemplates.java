@@ -24,7 +24,7 @@ class KnowledgeTemplates {
     record Category(String code, String name, String type, String childType, String classRoot,
                     boolean classRequired, String templateKey, List<String> relations) {}
     record ClassOption(String code, String name, String parent) {}
-    record Field(String id, String label, boolean property, boolean dictionary) {}
+    record Field(String id, String label, boolean property, boolean dictionary, String dictName) {}
     record Rule(@jakarta.validation.constraints.Size(max = 1000) String instruction, boolean required) {}
     record Schema(Category category, String knowledgeClass, String summaryKey, List<Field> fields, ObjectNode layout,
                   String origin, Map<String, Rule> rules, int profileRevision) {
@@ -69,6 +69,7 @@ class KnowledgeTemplates {
     private static final List<ClassOption> TCM_CLASSES = List.of(
             new ClassOption("2401", "方剂", "24"), new ClassOption("2402", "药膳食疗", "24"),
             new ClassOption("2403", "针灸穴位", "24"), new ClassOption("2404", "中药材", "24"));
+    private final BusinessCatalog catalog;
     private final JsonNode snapshot;
     private final CdssClient cdss;
     private final Clock clock;
@@ -76,7 +77,8 @@ class KnowledgeTemplates {
     private volatile Cache<JsonNode> templateCache;
     private final Map<String, Cache<List<ClassOption>>> classCache = new ConcurrentHashMap<>();
 
-    KnowledgeTemplates(CdssClient cdss, Clock clock, ObjectMapper json) throws IOException {
+    KnowledgeTemplates(CdssClient cdss, Clock clock, ObjectMapper json, BusinessCatalog catalog) throws IOException {
+        this.catalog = catalog;
         this.cdss = cdss;
         this.clock = clock;
         this.json = json;
@@ -89,7 +91,49 @@ class KnowledgeTemplates {
         return new Category(code, name, code, null, code, false, code, List.of(relations));
     }
 
-    List<Category> categories() { return CATEGORIES; }
+    List<Category> categories() {
+        var current = catalog.current();
+        if (current == null && !cdss.configured()) return CATEGORIES;
+        var kinds = current==null ? initialKinds() : current.kinds();
+        var result = new LinkedHashMap<String,Category>();
+        for (var kind : kinds) {
+            for (var c : CATEGORIES) if (c.code().equals(kind.code())) {
+                result.put(c.code(), new Category(c.code(),kind.name(),c.type(),c.childType(),c.classRoot(),
+                        c.classRequired(),c.templateKey(),c.relations()));
+            }
+        }
+        // These share the guides or nursing editor in the native system.
+        for (var c : CATEGORIES) if ((result.containsKey("17") && List.of("30","31").contains(c.code()))
+                || (result.containsKey("15") && c.code().equals("15_11"))) result.put(c.code(),c);
+        return List.copyOf(result.values());
+    }
+
+    private List<BusinessCatalog.Kind> initialKinds() {
+        var result = new ArrayList<BusinessCatalog.Kind>();
+        for (var row : BusinessCatalog.array(cdss.verifyConnection(),"知识入口")) {
+            String child=row.path("childType").asText("");
+            result.add(new BusinessCatalog.Kind(child.isBlank()?row.path("itemClass").asText():child,row.path("itemName").asText()));
+        }
+        return result;
+    }
+
+    void availableForCollection(String code) {
+        if (cdss.configured() && categories().stream().noneMatch(c->c.code().equals(code)))
+            throw bad("当前业务账号的知识入口中没有这个类型，请刷新业务资料");
+    }
+    private String rootCode(String root) {
+        return root.length()==1 && Character.isDigit(root.charAt(0)) ? "0"+root : root;
+    }
+    private List<ClassOption> fromCatalog(BusinessCatalog.Snapshot data, String root) {
+        var codes = new java.util.HashSet<String>();
+        codes.add(rootCode(root));
+        boolean expanded;
+        do {
+            expanded=false;
+            for (var row:data.tree()) if(codes.contains(row.parent()) && codes.add(row.code())) expanded=true;
+        } while(expanded);
+        return data.tree().stream().filter(n->codes.contains(n.code())).map(n->new ClassOption(n.code(),n.name(),n.parent())).toList();
+    }
 
     Category category(String code) {
         return CATEGORIES.stream().filter(c -> c.code().equals(code)).findFirst()
@@ -98,6 +142,11 @@ class KnowledgeTemplates {
 
     List<ClassOption> classes(String code) {
         Category category = category(code);
+        var saved = catalog.current();
+        if (saved != null) {
+            var options=fromCatalog(saved,category.classRoot());
+            return code.equals("24") ? options.stream().filter(o->TCM_CLASSES.stream().anyMatch(c->c.code().equals(o.code()))).toList() : options;
+        }
         try {
             List<ClassOption> live = liveClasses(category.classRoot());
             if (!live.isEmpty()) {
@@ -130,7 +179,7 @@ class KnowledgeTemplates {
         if (!cdss.configured()) return List.of();
         Cache<List<ClassOption>> found = classCache.get(root);
         if (found != null && clock.millis() < found.expires()) return found.value();
-        JsonNode rows = cdss.classes(root);
+        JsonNode rows = cdss.classes(rootCode(root));
         var options = new LinkedHashMap<String, ClassOption>();
         for (JsonNode row : rows) {
             String code = row.path("knowledgeClass").asText();
@@ -145,7 +194,8 @@ class KnowledgeTemplates {
     Schema schema(String typeCode, String classCode) {
         var category = category(typeCode);
         validateClass(category, classCode, false);
-        JsonNode live = currentTemplates();
+        var synced = catalog.current();
+        JsonNode live = synced == null ? currentTemplates() : synced.templates();
         String key = typeCode.equals("24") ? classCode : category.templateKey();
         JsonNode template = live.path(key);
         if (!template.isObject()) template = snapshot.path(key);
@@ -165,7 +215,7 @@ class KnowledgeTemplates {
         ensureSection(catalog, fields, "references", "参考文献与原件");
         ensureSection(catalog, fields, "laiyuan", "资料来源");
         return new Schema(category, trim(classCode), summary, fields(layout), layout,
-                live == snapshot ? "模板快照" : "4.23 在线模板", Map.of(), 0);
+                synced != null ? "4.23 同步模板" : live == snapshot ? "模板快照" : "4.23 在线模板", Map.of(), 0);
     }
 
     private void ensureSection(ArrayNode catalog, List<Field> fields, String key, String label) {
@@ -185,7 +235,7 @@ class KnowledgeTemplates {
         for (JsonNode node : nodes) {
             String name = node.path("id").asText();
             if (!name.isBlank()) fields.putIfAbsent(name, new Field(name, DocumentReader.withDefault(
-                    node.path("label").asText(), name), property, "select".equals(node.path("type").asText())));
+                    node.path("label").asText(), name), property, "select".equals(node.path("type").asText()), node.path("dictName").asText(null)));
             collect(node.path("children"), property, fields);
         }
     }
