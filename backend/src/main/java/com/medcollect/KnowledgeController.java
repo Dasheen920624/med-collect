@@ -25,7 +25,7 @@ class KnowledgeController {
     private final ModelService model;
 
     record Change(@Positive int revision, @Size(max = 1000) String note) {}
-    record ReviewInput(@Positive int revision, @Size(max = 80) String targetId) {}
+    record ReviewInput(@Positive int revision, @Size(max = 80) String targetId, boolean manual) {}
 
     KnowledgeController(KnowledgeWorkflow workflow, KnowledgeTemplates templates,
                         Store store, SyncService sync, SyncReviews reviews, ModelService model) {
@@ -93,8 +93,12 @@ class KnowledgeController {
 
     @PostMapping("/knowledge/{id}/sync-review")
     SyncReviews.Preview syncReview(@PathVariable String id, @Valid @RequestBody ReviewInput input, Principal actor) {
-        return reviews.prepare(id, input.revision(), input.targetId(), actor.getName());
+        return reviews.prepare(id, input.revision(), input.targetId(), input.manual(), actor.getName());
     }
+
+    @GetMapping("/knowledge/{id}/sync-targets")
+    Page<BusinessKnowledge.Candidate> targets(@PathVariable String id, @RequestParam @Size(min=1,max=100) String query,
+            @RequestParam(defaultValue="1") @Positive int page) { return reviews.targets(id,query,page); }
 
     @PostMapping("/knowledge/{id}/revisions")
     KnowledgeWorkflow.Detail revision(@PathVariable String id, @Valid @RequestBody Change input, Principal actor) {
@@ -106,6 +110,9 @@ class KnowledgeController {
                                        @RequestParam(defaultValue = "20") int size) {
         return reviews.versions(id, page, size);
     }
+
+    @GetMapping("/knowledge/{id}/sync-receipt")
+    BusinessKnowledge.Receipt receipt(@PathVariable String id) { return sync.receipt(id); }
 
     @GetMapping("/knowledge/{id}/sync-versions/{versionId}")
     SyncReviews.VersionDetail version(@PathVariable String id, @PathVariable String versionId) {

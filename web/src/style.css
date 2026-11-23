@@ -453,6 +453,10 @@ th input[type=checkbox],td input[type=checkbox] { min-height: 0; width: 15px; he
 .reference-counts { display:grid; grid-template-columns:repeat(3,1fr); padding:1px 18px 11px; }
 .reference-counts div { padding-left:12px; border-left:1px solid #d4e2da; }
 .reference-counts div:first-child { border:none; padding:0; }
+.delivery-counts button { text-align:left; border:0; border-left:1px solid #d4e2da; padding:3px 8px 3px 12px; color:inherit; background:none; }
+.delivery-counts button:first-child { border:0; padding-left:0; }
+.delivery-counts button:hover small,.delivery-counts button:focus-visible small { color:var(--blue); text-decoration:underline; }
+.inbox-tabs { overflow-x:auto; }
 .reference-time,.masterdata>.link { display:block; margin:0 18px 4px; }
 .recent-work header { border-bottom:1px solid var(--line); }
 .reference-strip { padding:13px 16px; background:#eaf3ef; border:1px solid #d7e5dd; border-radius:8px; margin:0 0 14px; }

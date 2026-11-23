@@ -49,13 +49,20 @@ class SyncReviews {
         this.transactions = transactions;
     }
 
-    Preview prepare(String id, int revision, String targetId, String actor) {
+    Page<BusinessKnowledge.Candidate> targets(String id, String query, int page) {
+        Knowledge draft = store.knowledge(id);
+        requireReviewable(draft,draft.revision());
+        return business.targets(draft,query,page);
+    }
+
+    Preview prepare(String id, int revision, String targetId, boolean manual, String actor) {
         Knowledge draft = store.knowledge(id);
         requireReviewable(draft, revision);
         if (!cdss.configured()) throw conflict("请配置 4.23 业务账号后查重");
         BusinessKnowledge.Plan plan;
         try {
-            plan = business.plan(draft, store.material(draft.materialId()), targetId);
+            var material = store.material(draft.materialId());
+            plan = manual ? business.manualPlan(draft,material,targetId) : business.plan(draft,material,targetId);
         } catch (CdssClient.RemoteFailure e) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage(), e);
         }
@@ -75,7 +82,7 @@ class SyncReviews {
                     VALUES (:id, :review, :revision, :plan)
                     """).param("id", id).param("review", review).param("revision", nextRevision)
                     .param("plan", write(plan), Types.CLOB).update();
-            store.event("KNOWLEDGE", id, "SYNC_REVIEWED", actor, plan.target() == null ? plan.operation().name() : plan.target().id());
+            store.event("KNOWLEDGE", id, "SYNC_REVIEWED", actor, plan.target() == null ? plan.operation().name() : plan.target().basis()+" · "+plan.target().id());
             return view(review, false, plan);
         });
     }
@@ -129,12 +136,13 @@ class SyncReviews {
                 .query(String.class).optional();
         if (existing.isPresent()) return workflow.detail(existing.get());
         String draft = id();
+        String nextTitle = approved(latest).map(a -> a.plan().form().get("name")).orElse(store.knowledge(latest).title());
         changed(store.db().sql("""
                 INSERT INTO mc_knowledge (id, material_id, title, type_code, knowledge_class, summary, template_json,
                     fields_json, relations_json, status, revision, model_name, created_at, updated_at, update_target_id)
-                SELECT :draft, material_id, title, type_code, knowledge_class, summary, template_json, fields_json,
+                SELECT :draft, material_id, :title, type_code, knowledge_class, summary, template_json, fields_json,
                     relations_json, 'DRAFT', 1, model_name, :now, :now, remote_id FROM mc_knowledge WHERE id = :id
-                """).param("draft", draft).param("id", latest).param("now", store.now()).update());
+                """).param("draft", draft).param("title",nextTitle).param("id", latest).param("now", store.now()).update());
         store.event("KNOWLEDGE", draft, "REVISION_CREATED", actor, original.remoteId());
         return workflow.detail(draft);
     }

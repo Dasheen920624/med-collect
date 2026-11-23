@@ -12,7 +12,7 @@ Java 21、Spring Boot 和 Vue 3 应用。支持指定网址、栏目、Europe PM
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 mvn -f backend/pom.xml clean verify
-& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.6.jar
+& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.7.jar
 ~~~
 
 打开 [本地采集工作台](http://127.0.0.1:8085/)。`local` 使用当前运行目录下 `.medcollect/db` 的 H2，原件保存到 `.medcollect/originals`。回环地址的本地体验账户为 `admin`，密码为 `medcollect-local`。运行 Vue 开发服务器可用 `pnpm --dir web dev`，其 `/api` 请求代理到 `127.0.0.1:8085`。更改代理地址时设置 `MEDCOLLECT_DEV_API`。
@@ -33,7 +33,7 @@ $env:MEDCOLLECT_CDSS_PASSWORD = Read-Host '业务账户密码' -MaskInput
 $env:MEDCOLLECT_MODEL_URL = Read-Host 'OpenAI 兼容网关地址'
 $env:MEDCOLLECT_MODEL_KEY = Read-Host '模型 API 密钥' -MaskInput
 $env:MEDCOLLECT_CDSS_CERT_SHA256 = Read-Host '业务系统叶证书 SHA-256 指纹，可留空使用信任链'
-& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.6.jar --spring.profiles.active=oracle
+& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.7.jar --spring.profiles.active=oracle
 ~~~
 
 业务 HTTPS 使用 JVM 信任链，也支持用现场核验的指纹固定叶证书。在系统设置测试业务连接并刷新模板后，可设置 `MEDCOLLECT_CDSS_SYNC_ENABLED=true` 并重启采集服务。
@@ -57,9 +57,11 @@ $env:MEDCOLLECT_CDSS_CERT_SHA256 = Read-Host '业务系统叶证书 SHA-256 指�
 
 在登录页点「注册账号」创建审核员账号，注册完成即可登录。管理员登录后在「用户管理」新建账号、调整角色、启用或停用账号、重置密码。账号和 BCrypt 密码哈希保存在数据库。初始化配置在首启时导入现有账号，之后以数据库中的账号设置为准。
 
-## 业务资料同步
+## 从采集文献写入 4.23
 
-「文献采集工作台」显示当前专科的待核验原文、待解析文献、待审稿件和最近同步文献。管理员在「业务分类」同步 4.23 的知识入口、专科病种、模板及参数字典。文献解析可使用已登记的业务类别，审核时可按名称或编码查找字典项目。通过「采集任务 → 业务文献库」检索指南、医学书籍或期刊，选择原附件或摘要采集，执行记录会关联到原文库。[业务资料维护与复验](docs/deployment.md#016-业务资料与文献选采)
+文献来自出版社网址、文献检索、全网检索或上传。核验原件后，用目标业务模板解析为知识稿，核对摘要、结构化字段和字典。首页的「同步至 4.23」显示已审核待同步、异常及相同已跳过的稿件。点击「查看写入记录」可以区分实际新增和按原 ID 更新，打开业务知识，或实时核验类别、标题、摘要与 PDF 原件。
+
+在「审核与同步」先查重并核对差异。自动匹配使用文献 DOI 或同类标题。整理为疾病、检验等知识时以业务知识名称识别目标，审核人也可以按业务名称选择已有记录。审核通过后办理同步。4.23 的专科、病种、模板和字典用于构建稿件。需要参考业务库已有文献时，在「采集任务 → 从 4.23 导入文献」选采。[写入、回读与验收](docs/deployment.md#017-写入-423-与回读)
 
 ## 操作流程
 

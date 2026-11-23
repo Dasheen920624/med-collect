@@ -63,11 +63,15 @@ class KnowledgeWorkflow {
             filters.put("material", materialId);
         }
         from += Classifications.subjectScope("k.material_id", subjectId, filters);
-        if (!trim(human).isBlank()) {
+        if ("EDITABLE".equals(human)) {
+            from += " AND k.status IN ('DRAFT','RETURNED')";
+        } else if (!trim(human).isBlank()) {
             from += " AND (CASE WHEN k.status IN ('DRAFT','PENDING','RETURNED') THEN k.status ELSE 'APPROVED' END) = :human";
             filters.put("human", human);
         }
-        if (!trim(sync).isBlank()) {
+        if ("READY".equals(sync)) {
+            from += " AND k.status = 'APPROVED'";
+        } else if (!trim(sync).isBlank()) {
             from += " AND (CASE WHEN k.sync_phase = 'SKIPPED' THEN 'SKIPPED' WHEN k.status IN"
                     + " ('SYNCING','SYNCED','SYNC_FAILED') THEN k.status ELSE 'UNSYNCED' END) = :sync";
             filters.put("sync", sync);
@@ -79,7 +83,11 @@ class KnowledgeWorkflow {
                 (SELECT MAX(e.occurred_at) FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
                   AND e.action IN ('APPROVED','RETURNED')) reviewed_at,
                 (SELECT MAX(e.occurred_at) FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
-                  AND e.action = 'AI_REVIEW') ai_reviewed_at
+                  AND e.action = 'AI_REVIEW') ai_reviewed_at,
+                CASE WHEN k.status <> 'SYNCED' THEN NULL WHEN k.sync_phase = 'SKIPPED' THEN 'SKIP'
+                  ELSE COALESCE((SELECT MAX(v.operation) FROM mc_sync_version v WHERE v.knowledge_id = k.id),
+                    (SELECT MAX('CREATE') FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id AND e.action = 'SYNC_CREATED'))
+                  END delivered_operation
                 """;
         return store.page(columns,
                 from, "k.updated_at DESC, k.id", filters, page, size, KnowledgeList.class);

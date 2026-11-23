@@ -2,6 +2,8 @@
 
 分析日期 2026-11-23。业务系统源码与线上读接口用于核对数据契约。部署使用 Java 21、Spring Boot、Vue 3 和采集专用 Oracle schema。
 
+系统以 4.23 知识管理为交付目标。外部文献通过解析和人工审核后，已有知识按原业务主键更新，新知识按业务模板新增，相同内容登记跳过。4.23 回读的业务记录和原件用于确认结果。[出站流程核查与实际验收](collection-audit.md#017-从文献到业务知识)
+
 ## 原型范围
 
 已核对原型入口及其 70 个脚本索引。自动采集流程主要在 `collection-journey.js`、`collection-product-workspace.js`、`task-workspace.js`、`collection-redesign.js`、`production-workspace.js`、`knowledge-center-workflow.js`、`sources.js` 和 `collection-conversation-planner.js`。这些模块覆盖采集来源维护、指定网址、栏目检索、关键词检索、手工文件、执行计划、任务记录、原文、原文审核、模板解析、知识审核、同步及同步回执。对话规划在原型使用前端规则生成待确认的采集项，交付时沿用先确认任务再执行的流程。专科门户、评估、规则生产等模块用于理解上下游，本项目的入口是知识自动采集。

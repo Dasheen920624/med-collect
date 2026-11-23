@@ -58,23 +58,20 @@ class WorkflowIntegrationTest {
     @TempDir static Path originals;
     private static final ObjectMapper WIRE = new ObjectMapper();
     private static final AtomicInteger CREATES = new AtomicInteger();
-    private static final AtomicInteger UPLOADS = new AtomicInteger();
+    private static final Map<String, AtomicInteger> FILE_WRITES = new ConcurrentHashMap<>();
     private static final AtomicInteger BINDS = new AtomicInteger();
     private static final AtomicReference<Map<String, String>> SAVED_FORM = new AtomicReference<>();
-    private static final AtomicReference<byte[]> ATTACHMENT = new AtomicReference<>();
+    private static final Map<String,byte[]> REMOTE_FILES = new ConcurrentHashMap<>();
     private static final AtomicReference<String> MODEL_REQUEST = new AtomicReference<>();
     private static final Map<String, String> AFFIXES = new ConcurrentHashMap<>();
     private static final Map<String, Map<String, String>> BUSINESS_RECORDS = new ConcurrentHashMap<>();
     private static final AtomicInteger UPDATES = new AtomicInteger();
     private static final AtomicReference<String> INTERRUPT_UPDATE = new AtomicReference<>();
     private static final Map<String, List<String>> BUSINESS_AFFIXES = new ConcurrentHashMap<>();
-    private static final String OLD_VERSION_FILE = "knowledge-affix/older-reference.pdf";
-    private static final String NEW_VERSION_FILE = "knowledge-affix/revised-paper.pdf";
-    private static final AtomicReference<byte[]> REVISED_PDF = new AtomicReference<>();
+    private static final String OLD_VERSION_FILE = "knowledgeAffix/MedCollect/synthetic.pdf";
     private static volatile boolean referenceFailure;
     private static final String LIBRARY_ARTICLE = "fixture-literature-paper";
     private static final String TARGET_ID = "target-knowledge-id";
-    private static final String TARGET_FILE = "/knowledge-affix/synthetic.pdf";
     private static final HttpServer REMOTE = remote();
 
     @Autowired MockMvc mvc;
@@ -152,14 +149,22 @@ class WorkflowIntegrationTest {
         JsonNode incomplete = await(endpoint, "knowledge", "SYNC_FAILED");
         assertThat(incomplete.path("remoteId").asText()).isEqualTo(TARGET_ID);
         assertThat(incomplete.path("syncPhase").asText()).isEqualTo("UPLOADED");
+        String uploadPath = store.knowledge(knowledge).attachmentUrl();
+        REMOTE_FILES.put(uploadPath,"%PDF-wrong native file".getBytes(StandardCharsets.US_ASCII));
         postBody(endpoint + "/sync", Map.of("revision", incomplete.path("revision").asInt()));
+        var corrupt = await(endpoint,"knowledge","SYNC_FAILED");
+        assertThat(corrupt.path("syncError").asText()).contains("校验值");
+        assertThat(getBody(endpoint+"/sync-versions").path("total").asInt()).isZero();
+        REMOTE_FILES.put(uploadPath,pdf);
+        postBody(endpoint + "/sync", Map.of("revision", corrupt.path("revision").asInt()));
         JsonNode synced = await(endpoint, "knowledge", "SYNCED");
         assertThat(synced.path("remoteId").asText()).isEqualTo(TARGET_ID);
         assertThat(CREATES.get()).isEqualTo(1);
-        assertThat(UPLOADS.get()).isEqualTo(1);
+        assertThat(FILE_WRITES.get(uploadPath).get()).isOne();
+        assertThat(uploadPath).endsWith(Support.sha(pdf) + ".pdf");
         assertThat(BINDS.get()).isEqualTo(1);
-        assertThat(new String(ATTACHMENT.get(), StandardCharsets.ISO_8859_1))
-                .contains(new String(pdf, StandardCharsets.ISO_8859_1));
+        assertThat(REMOTE_FILES.get(uploadPath)).isEqualTo(pdf);
+        assertThat(getBody(endpoint + "/sync-receipt").path("pdfMatches").asBoolean()).isTrue();
         assertThat(SAVED_FORM.get()).containsEntry("type", "31").containsEntry("knowledgeClass", "17");
         JsonNode syncedContent = json.readTree(SAVED_FORM.get().get("content"));
         assertThat(syncedContent.path("content").path("abstract").asText()).contains("Synthetic reviewed abstract");
@@ -260,9 +265,10 @@ class WorkflowIntegrationTest {
         BUSINESS_AFFIXES.put(target, List.of(OLD_VERSION_FILE));
 
         byte[] originalBytes = pdf();
-        REVISED_PDF.set(originalBytes);
+        byte[] previousBytes = pdf();
+        REMOTE_FILES.put(OLD_VERSION_FILE, previousBytes);
         JsonNode uploaded = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file",
-                        "revised-paper.pdf", "application/pdf", originalBytes))
+                        "synthetic.pdf", "application/pdf", originalBytes))
                 .param("sourceUrl", source).param("title", "PDF version target")
                 .with(user("collector").roles("ADMIN")).with(csrf())));
         String material = uploaded.path("materialId").asText();
@@ -277,8 +283,11 @@ class WorkflowIntegrationTest {
         postBody(endpoint + "/sync", Map.of("revision", approved.path("revision").asInt()));
         var synced = await(endpoint, "knowledge", "SYNCED");
         assertThat(synced.path("remoteId").asText()).isEqualTo(target);
-        assertThat(BUSINESS_AFFIXES.get(target)).containsExactly(OLD_VERSION_FILE, NEW_VERSION_FILE);
-        assertThat(original.get("content")).contains("Keep existing reference citation", NEW_VERSION_FILE,
+        String versionFile = store.knowledge(draft.path("id").asText()).attachmentUrl();
+        assertThat(versionFile).endsWith(Support.sha(originalBytes) + ".pdf");
+        assertThat(BUSINESS_AFFIXES.get(target)).containsExactly(OLD_VERSION_FILE, versionFile);
+        assertThat(REMOTE_FILES.get(OLD_VERSION_FILE)).isEqualTo(previousBytes);
+        assertThat(original.get("content")).contains("Keep existing reference citation", versionFile,
                 "Revised PDF abstract only").doesNotContain("PDF raw test sentence");
 
         var next = postBody(endpoint + "/revisions", Map.of("revision", synced.path("revision").asInt()));
@@ -309,7 +318,7 @@ class WorkflowIntegrationTest {
         var approved = compareAndApprove(endpoint, pending.path("revision").asInt(), "CREATE");
 
         String target = "late-title-match";
-        BUSINESS_RECORDS.put(target, businessRecord(target, "LEGACY JOURNAL TITLE CHECK!", source));
+        BUSINESS_RECORDS.put(target, businessRecord(target, "LEGACY-JOURNAL: TITLE CHECK!", source));
         int creates = CREATES.get();
         postBody(endpoint + "/sync", Map.of("revision", approved.path("revision").asInt()));
         var stale = await(endpoint, "knowledge", "PENDING");
@@ -318,6 +327,51 @@ class WorkflowIntegrationTest {
         var compared = postBody(endpoint + "/sync-review", Map.of("revision", stale.path("revision").asInt()));
         assertThat(compared.path("target").path("id").asText()).isEqualTo(target);
         assertThat(compared.path("target").path("basis").asText()).isEqualTo("类别及标题一致");
+    }
+
+    @Test
+    void updatesManuallyMatchedLabKnowledgeWithNativeSubtypeAndAllDictionaryLinks() throws Exception {
+        String id = "lab-target-audit";
+        String doi = "https://doi.org/10.1234/outbound-lab-audit";
+        var original = businessRecord(id,"Existing lab terminology","https://example.org/earlier-lab");
+        original.put("type","8");
+        original.put("childType","8-1");
+        original.put("knowledgeClass","08");
+        original.put("itemIds","lab-keep");
+        var layout = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(original.get("content"));
+        layout.withObjectProperty("content").put("references","<p>Original lab citation</p>");
+        original.put("content",layout.toString());
+        BUSINESS_RECORDS.put(id,original);
+        BUSINESS_AFFIXES.put(id,List.of());
+        JsonNode uploaded = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile(
+                "file","synthetic.pdf","application/pdf",pdf())).param("sourceUrl",doi).param("title","External lab evidence")
+                .with(user("collector").roles("ADMIN")).with(csrf())));
+        String material = uploaded.path("materialId").asText();
+        postBody("/api/materials/"+material+"/decision",Map.of("revision",1,"approved",true,"sourceAbstract","Reviewed lab abstract"));
+        var draft = postBody("/api/materials/"+material+"/drafts",Map.of("typeCode","8-1","useAi",false));
+        String endpoint = "/api/knowledge/"+draft.path("id").asText();
+        postBody(endpoint+"/submit",Map.of("revision",draft.path("revision").asInt()));
+        var targets = getBody(endpoint+"/sync-targets?query=terminology");
+        assertThat(targets.path("rows").get(0).path("id").asText()).isEqualTo(id);
+        var review = postBody(endpoint+"/sync-review",Map.of("revision",currentRevision(endpoint),"manual",true,"targetId",id));
+        assertThat(review.path("operation").asText()).isEqualTo("UPDATE");
+        mvc.perform(post(endpoint+"/sync").contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("revision",currentRevision(endpoint))))
+                .with(user("reviewer").roles("REVIEWER")).with(csrf())).andExpect(status().isConflict());
+        var approved = approve(endpoint,review);
+        postBody(endpoint+"/sync",Map.of("revision",approved.path("revision").asInt()));
+        var synced = await(endpoint,"knowledge","SYNCED");
+        assertThat(synced.path("remoteId").asText()).isEqualTo(id);
+        assertThat(original).containsEntry("childType","8-1").containsEntry("itemIds","lab-keep")
+                .containsEntry("name","Existing lab terminology");
+        assertThat(original.get("content")).contains("Original lab citation","Reviewed lab abstract");
+        var receipt = getBody(endpoint+"/sync-receipt");
+        assertThat(receipt.path("titleMatches").asBoolean() && receipt.path("pdfMatches").asBoolean()).isTrue();
+        var versions = getBody(endpoint+"/sync-versions");
+        var version = getBody(endpoint+"/sync-versions/"+versions.path("rows").get(0).path("id").asText());
+        assertThat(version.path("after").path("itemIds")).isEqualTo(version.path("before").path("itemIds"));
+        var next = postBody(endpoint+"/revisions",Map.of("revision",synced.path("revision").asInt()));
+        assertThat(next.path("title").asText()).isEqualTo("Existing lab terminology");
     }
 
     private int currentRevision(String endpoint) throws Exception {
@@ -658,8 +712,8 @@ class WorkflowIntegrationTest {
                         byte[] bytes="Native literature".getBytes(StandardCharsets.UTF_8);
                         exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);return;
                     }
-                    if (path.equals("/api/upload/view/" + NEW_VERSION_FILE)) {
-                        byte[] bytes = REVISED_PDF.get();
+                    if (path.startsWith("/api/upload/view/") && REMOTE_FILES.containsKey(path.substring(17))) {
+                        byte[] bytes = REMOTE_FILES.get(path.substring(17));
                         exchange.sendResponseHeaders(200, bytes.length);
                         exchange.getResponseBody().write(bytes);
                         return;
@@ -683,6 +737,7 @@ class WorkflowIntegrationTest {
                             }
                         }
                         case "/api/knowledge/get-statistics-by-status" -> ok(List.of(Map.of("itemClass","1","itemName","疾病知识"),
+                                Map.of("itemClass","8","childType","8-1","itemName","检验知识"),
                                 Map.of("itemClass","6","itemName","药品说明书"),Map.of("itemClass","17","itemName","临床指南")));
                         case "/api/knowledge/get-class-tree" -> ok(referenceFailure?List.of():List.of(
                                 Map.of("knowledgeClass","01","knowledgeClassName","疾病","upperClass","00"),
@@ -709,6 +764,10 @@ class WorkflowIntegrationTest {
                             String id = fields.get("id");
                             if (id != null) {
                                 var target = BUSINESS_RECORDS.get(id);
+                                if ("8".equals(target.get("type"))) {
+                                    if (!target.get("childType").equals(fields.get("childType"))) yield Map.of("code",1,"success",false,"message","缺少匹配的检验检查子类");
+                                    target.put("itemIds",fields.getOrDefault("itemIds[0]",""));
+                                }
                                 UPDATES.incrementAndGet();
                                 target.putAll(fields);
                                 if ("1".equals(target.get("isStart"))) target.put("isStart", "0");
@@ -728,15 +787,25 @@ class WorkflowIntegrationTest {
                             String id = form(request).get("id");
                             if(LIBRARY_ARTICLE.equals(id)) yield ok(Map.of("id",id,"type","31","knowledgeClass","170103",
                                     "validFlag",1,"name","Native journal","content",Map.of("content",Map.of("abstract","Source abstract"))));
-                            yield ok(TARGET_ID.equals(id) ? saved() : BUSINESS_RECORDS.get(id));
+                            var found = TARGET_ID.equals(id) ? saved() : BUSINESS_RECORDS.get(id);
+                            if (found != null && "8".equals(found.get("type"))) {
+                                var nativeItem = new LinkedHashMap<String,Object>(found);
+                                String item = found.getOrDefault("itemIds","");
+                                nativeItem.put("itemIds",item.isBlank() ? List.of() : List.of(item));
+                                yield ok(nativeItem);
+                            }
+                            yield ok(found);
                         }
                         case "/api/upload" -> {
-                            if (new String(request, StandardCharsets.ISO_8859_1).contains("filename=\"revised-paper.pdf\"")) {
-                                yield ok(Map.of("url", NEW_VERSION_FILE));
-                            }
-                            UPLOADS.incrementAndGet();
-                            ATTACHMENT.set(request);
-                            yield ok(Map.of("url", TARGET_FILE));
+                            String multipart = new String(request,StandardCharsets.ISO_8859_1);
+                            var name = java.util.regex.Pattern.compile("filename=\\\"([^\\\"]+)\\\"").matcher(multipart);
+                            if (!name.find()) throw new AssertionError("Missing original filename");
+                            String storage = "knowledgeAffix/MedCollect/" + name.group(1);
+                            int start = multipart.indexOf("\r\n\r\n",name.end()) + 4;
+                            int end = multipart.lastIndexOf("\r\n--");
+                            REMOTE_FILES.put(storage, Arrays.copyOfRange(request,start,end));
+                            FILE_WRITES.computeIfAbsent(storage,k -> new AtomicInteger()).incrementAndGet();
+                            yield ok(Map.of("url",storage));
                         }
                         case "/api/knowledge/query-affix" -> {
                             String id = form(request).get("knowledgeId");

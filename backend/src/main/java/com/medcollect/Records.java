@@ -67,7 +67,7 @@ final class Records {
 
     record KnowledgeList(String id, String materialId, String materialTitle, String title, String typeCode,
                          KnowledgeStatus status, long updatedAt, String remoteId, String syncPhase,
-                         String reviewer, Long reviewedAt, Long aiReviewedAt) {}
+                         String reviewer, Long reviewedAt, Long aiReviewedAt, String deliveredOperation) {}
     record Knowledge(String id, String materialId, String title, String typeCode, String knowledgeClass,
                      String summary, String templateJson, String fieldsJson, String relationsJson,
                      KnowledgeStatus status, int revision, String modelName, long createdAt, long updatedAt,
@@ -79,5 +79,6 @@ final class Records {
                      @Size(max = 12000) String summary, Map<String, String> fields,
                      Map<String, List<String>> relations) {}
     record Event(String id, String entityType, String entityId, String action, String actor, long occurredAt, String note) {}
-    record Dashboard(long tasks, long materials, long pendingMaterials, long pendingKnowledge, long synced, long metadata, long unparsed) {}
+    record Dashboard(long tasks, long materials, long pendingMaterials, long pendingKnowledge, long synced, long metadata,
+                     long unparsed, long readyToSync, long syncFailed, long written, long skipped) {}
 }

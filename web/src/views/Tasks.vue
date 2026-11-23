@@ -234,7 +234,6 @@ function resultText(r) {
   <section class="page-head">
     <h1>采集任务</h1>
     <div v-if="session.admin" class="actions">
-      <button v-if="session.cdssConfigured" class="button secondary" @click="businessLibrary=true">业务文献库</button>
         <button class="button secondary" @click="edit(null,'URL')">指定网址下载</button>
       <button class="button secondary" @click="uploadTask = ''">手工上传</button>
       <button class="button primary" :disabled="!session.webSearch" :title="session.webSearch ? '' : '请先配置全网搜索服务'" @click="edit(null,'WEB')">全网搜索</button>
@@ -245,6 +244,7 @@ function resultText(r) {
     <div class="panel-head"><h2>采集任务列表</h2><div class="actions">
       <button class="link" @click="showHistory()"><History :size="15" /> 执行记录</button>
       <button v-if="session.admin" class="link" @click="edit(null,'EUROPE_PMC')">文献检索</button>
+      <button v-if="session.cdssConfigured" class="link" @click="businessLibrary=true">从 4.23 导入文献</button>
       <button v-if="session.admin" class="link" @click="openPlanner"><Sparkles :size="15" /> 智能规划</button>
       <button class="icon-button" aria-label="刷新任务" :disabled="loading" @click="load()"><RefreshCw :size="15" /></button></div></div>
     <form class="filters" @submit.prevent="load(1)">

@@ -6,7 +6,6 @@ import static com.medcollect.Support.*;
 
 import java.sql.Types;
 import java.time.Duration;
-import java.util.Map;
 import java.util.concurrent.Executor;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -84,8 +83,8 @@ class SyncService {
             String remoteId = knowledge.remoteId();
             if (remoteId == null) remoteId = saveRecord(knowledge, material, schema, approval != null, token, actor);
             if (material.pdf()) syncPdf(owned(id, token), material, remoteId, token, actor);
-            cdss.verifyRecord(remoteId, schema.category().type(), marker(id));
-            ObjectNode actual = approval == null ? null : business.snapshot(remoteId, schema.category());
+            ObjectNode actual = business.snapshot(remoteId, schema.category());
+            business.verifyCreated(knowledge, material, actual);
             complete(id, token, actor, remoteId, approval, actual, false);
         } catch (BusinessKnowledge.ReviewChanged e) {
             redoReview(id, token, actor, e.getMessage());
@@ -116,7 +115,7 @@ class SyncService {
             templates.validateClass(category, knowledge.knowledgeClass(), true);
             workflow.validateBusinessValues(knowledge,true);
             if (reviewed) business.verifyNoMatch(knowledge, material);
-            Map<String, String> form = business.createForm(knowledge, material, schema);
+            var form = business.createForm(knowledge, material, schema);
             cdss.prepareWrite();
             checkpoint(knowledge.id(), token, actor, "POSTING", null, null);
             try {
@@ -143,6 +142,9 @@ class SyncService {
             throw new BusinessKnowledge.ReviewChanged("4.23 原业务记录在审核后发生变化，请重新对比并审核");
         }
         if (plan.operation() == BusinessKnowledge.Operation.SKIP) {
+            if (!business.receipt(knowledge,material,current,plan).verified()) {
+                throw new BusinessKnowledge.ReviewChanged("4.23 正文或原件与审核时不同，请重新查重并审核");
+            }
             complete(id, token, actor, remoteId, approval, null, true);
             return;
         }
@@ -159,7 +161,7 @@ class SyncService {
                 workflow.validateBusinessValues(knowledge,true);
                 cdss.prepareWrite();
                 checkpoint(id, token, actor, "UPDATE_POSTING", remoteId, null);
-                cdss.update(remoteId, plan.form());
+                cdss.update(remoteId, business.updateForm(plan,schema.category(),plan.form().get("content")));
             }
             checkpoint(id, token, actor, "UPDATED", remoteId, null);
         }
@@ -175,12 +177,15 @@ class SyncService {
             }
             String references = business.restoreReferences(plan, current);
             if (references != null) {
-                cdss.update(remoteId, Map.of("name", plan.form().get("name"), "type", plan.form().get("type"), "content", references));
+                cdss.update(remoteId, business.updateForm(plan,schema.category(),references));
                 current = business.snapshot(remoteId, schema.category());
                 if (business.restoreReferences(plan, current) != null || !business.matchesUpdate(plan, current, id, true)) {
                     throw new CdssClient.RemoteFailure("4.23 更新回读时未保留已审核正文或参考文献");
                 }
             }
+        }
+        if (!business.receipt(knowledge,material,current,plan).verified()) {
+            throw new CdssClient.RemoteFailure("4.23 回读的标题、类别、摘要或 PDF 与已审核更新不一致");
         }
         complete(id, token, actor, remoteId, approval, current, false);
     }
@@ -190,8 +195,11 @@ class SyncService {
         String attachment = knowledge.attachmentUrl();
         if (attachment == null) {
             byte[] original = store.bytes(material);
-            attachment = cdss.uploadPdf(material.fileName(), original);
+            attachment = cdss.uploadPdf(knowledge.id(),original);
             checkpoint(knowledge.id(), token, actor, "UPLOADED", remoteId, attachment);
+        }
+        if (!material.sha256().equals(cdss.pdfChecksum(attachment))) {
+            throw new CdssClient.RemoteFailure("4.23 上传的 PDF 校验值与原件不符，未确认附件绑定");
         }
         if (!cdss.hasAttachment(remoteId, attachment)) {
             cdss.bindAttachment(remoteId, attachment, material.fileName(), knowledge.id().replace("-", ""));
@@ -200,6 +208,13 @@ class SyncService {
             throw new CdssClient.RemoteFailure("4.23 已响应附件绑定，复查时尚未找到附件");
         }
         checkpoint(knowledge.id(), token, actor, "ATTACHED", remoteId, attachment);
+    }
+
+    BusinessKnowledge.Receipt receipt(String id) {
+        Knowledge draft = store.knowledge(id);
+        if (draft.remoteId() == null || draft.status() != KnowledgeStatus.SYNCED) throw conflict("该稿件尚无已完成的业务同步回执");
+        var current = business.snapshot(draft.remoteId(),workflow.schema(draft).category());
+        return business.receipt(draft,store.material(draft.materialId()),current,reviews.approved(id).map(SyncReviews.Approved::plan).orElse(null));
     }
 
     KnowledgeWorkflow.Detail resetUncertain(String id, int revision, String note, String actor) {

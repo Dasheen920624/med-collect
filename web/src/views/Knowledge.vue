@@ -6,6 +6,8 @@ import { date, knowledgeStates, relations } from '../labels'
 import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
 import BusinessRelation from '../components/BusinessRelation.vue'
+import BusinessTargetPicker from '../components/BusinessTargetPicker.vue'
+import BusinessSyncReceipt from '../components/BusinessSyncReceipt.vue'
 import BusinessProperty from '../components/BusinessProperty.vue'
 import PdfReader from '../components/PdfReader.vue'
 import Events from '../components/Events.vue'
@@ -50,9 +52,10 @@ watch(() => [content.value?.knowledge?.typeCode,content.value?.knowledge?.knowle
   } catch { /* The stored business code remains visible when the directory is unavailable. */ }
 })
 const humanLabels = { DRAFT:'草稿', PENDING:'待审核', APPROVED:'已通过', RETURNED:'已退回' }
-const syncLabels = { UNSYNCED:'未同步', SYNCING:'同步中', SYNCED:'已同步', SKIPPED:'已跳过', SYNC_FAILED:'同步异常' }
+const syncLabels = { READY:'审核通过待同步', UNSYNCED:'未同步', SYNCING:'同步中', SYNCED:'已写入 4.23', SKIPPED:'相同已跳过', SYNC_FAILED:'同步异常' }
+const outcomeLabels = { ...syncLabels, CREATE:'已新增', UPDATE:'已更新' }
 const humanState = row => row.status in humanLabels ? row.status : 'APPROVED'
-const syncState = row => row.syncPhase === 'SKIPPED' ? 'SKIPPED' : row.status in syncLabels ? row.status : 'UNSYNCED'
+const syncState = row => row.syncPhase === 'SKIPPED' ? 'SKIPPED' : row.deliveredOperation || (row.status === 'APPROVED' ? 'READY' : row.status in syncLabels ? row.status : 'UNSYNCED')
 const latestAdvice = computed(() => content.value?.events?.find(e => e.action === 'AI_REVIEW'))
 let request = 0
 let choiceRequest = 0
@@ -155,12 +158,12 @@ async function openDraft(id) {
   } catch (e) { issue.value = e.message }
 }
 
-async function compare(targetId) {
+async function compare(targetId, manual = false) {
   busy.value = true
   panelIssue.value = ''
   const { id, revision } = draft.value
   try {
-    await send('/knowledge/' + id + '/sync-review', { revision, targetId })
+    await send('/knowledge/' + id + '/sync-review', { revision, targetId, manual })
     setDraft(await api('/knowledge/' + id), false)
     await load(table.value.page)
   } catch (e) { panelIssue.value = e.message }
@@ -261,9 +264,11 @@ async function act(action, approved) {
 
 async function applyDetail(value) {
   filters.value = freshFilters()
-  if (value === 'pending' || value === 'synced') {
-    if (value === 'pending') filters.value.human = 'PENDING'
-    else filters.value.sync = 'SYNCED'
+  if (value === 'pending' || value === 'drafts') {
+    filters.value.human = value === 'pending' ? 'PENDING' : 'EDITABLE'
+    await load()
+  } else if (['synced','ready','failed','skipped'].includes(value)) {
+    filters.value.sync = { synced:'SYNCED', ready:'READY', failed:'SYNC_FAILED', skipped:'SKIPPED' }[value]
     await load()
   } else if (value?.startsWith('material:')) {
     filters.value.materialId = value.slice(9)
@@ -306,6 +311,7 @@ watch(() => props.detail, applyDetail)
         <option v-if="filters.materialId && !materialChoices.some(m => m.id === filters.materialId)" :value="filters.materialId">当前来源原文</option>
         <option v-for="m in materialChoices" :key="m.id" :value="m.id">{{ m.title }}</option></select>
       <select v-model="filters.human" aria-label="人工审核"><option value="">全部人工审核状态</option>
+        <option value="EDITABLE">待整理草稿或退回稿</option>
         <option v-for="(name,key) in humanLabels" :key="key" :value="key">{{ name }}</option></select>
       <select v-model="filters.sync" aria-label="同步状态"><option value="">全部同步状态</option>
         <option v-for="(name,key) in syncLabels" :key="key" :value="key">{{ name }}</option></select>
@@ -320,8 +326,8 @@ watch(() => props.detail, applyDetail)
           <td><button class="link record-title" @click="emit('navigate','materials',row.materialId)">{{ row.materialTitle }}</button></td>
           <td><button v-if="row.aiReviewedAt" class="link" @click="openDraft(row.id)">查看意见</button><span v-else>未预审</span></td>
           <td><StateBadge :state="humanState(row)" :labels="humanLabels" /></td>
-          <td>{{ row.reviewer || '—' }}</td><td>{{ date(row.reviewedAt) }}</td><td><StateBadge :state="syncState(row)" :labels="syncLabels" /></td>
-          <td><button class="link" @click="openDraft(row.id)">{{ row.status === 'PENDING' ? '审核' : '详情' }}</button></td>
+          <td>{{ row.reviewer || '—' }}</td><td>{{ date(row.reviewedAt) }}</td><td><StateBadge :state="syncState(row)" :labels="outcomeLabels" /></td>
+          <td><button class="link" @click="openDraft(row.id)">{{ row.status === 'PENDING' ? '审核' : row.status === 'APPROVED' ? '办理同步' : row.status === 'SYNCED' ? '查看回执' : '详情' }}</button></td>
         </tr></tbody></table></div>
     <EmptyState v-else :title="loading ? '正在查询知识' : '暂无匹配知识'" />
     <Pagination v-bind="table" resizable @change="load" @resize="pageSize = $event; load()" />
@@ -352,6 +358,7 @@ watch(() => props.detail, applyDetail)
       <StateBadge v-else :state="draft.status" :labels="knowledgeStates" />
       <strong>{{ draft.schema.category.name }}<span v-if="draft.knowledgeClass"> › {{ classLabel || draft.knowledgeClass }}</span></strong>
     </div>
+    <BusinessSyncReceipt v-if="draft.remoteUrl && draft.status === 'SYNCED'" :key="draft.id" :draft="draft" />
     <details class="review-metadata"><summary>资料信息</summary>
     <dl class="metadata">
       <div><dt>知识目标</dt><dd>{{ draft.schema.category.name }}<span v-if="draft.knowledgeClass"> · {{ classLabel ? classLabel + '（' + draft.knowledgeClass + '）' : draft.knowledgeClass }}</span></dd></div>
@@ -397,6 +404,7 @@ watch(() => props.detail, applyDetail)
         </button>
       </div>
       <p v-if="canCompare && !review" class="muted">审核前核对 4.23 现有知识。</p>
+      <BusinessTargetPicker v-if="canCompare && !draft.updateTargetId" :key="draft.id" :draft-id="draft.id" :busy="busy" @select="id => compare(id,true)" />
       <template v-if="review">
         <p v-if="draft.syncPhase !== 'SKIPPED' && draft.status !== 'SYNCED'">{{ reviewMessages[review.operation] }}</p>
         <p v-if="review.mayResetBusinessReview && draft.status !== 'SYNCED'" class="message">

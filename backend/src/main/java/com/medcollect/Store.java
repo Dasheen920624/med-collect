@@ -157,7 +157,10 @@ class Store {
                 count(materials + " AND status = 'PENDING'", params), count(knowledge + " AND status = 'PENDING'", params),
                 count(knowledge + " AND status = 'SYNCED'", params), count(materials + " AND format_code = 'METADATA'", params),
                 count(materials + " AND format_code <> 'METADATA' AND NOT EXISTS"
-                        + " (SELECT 1 FROM mc_knowledge k WHERE k.material_id = m.id)", params));
+                        + " (SELECT 1 FROM mc_knowledge k WHERE k.material_id = m.id)", params),
+                count(knowledge + " AND k.status = 'APPROVED'", params),count(knowledge + " AND k.status = 'SYNC_FAILED'", params),
+                count(knowledge + " AND k.status = 'SYNCED' AND (k.sync_phase IS NULL OR k.sync_phase <> 'SKIPPED')", params),
+                count(knowledge + " AND k.status = 'SYNCED' AND k.sync_phase = 'SKIPPED'", params));
     }
 
     private long count(String from, Map<String, Object> params) {

@@ -54,7 +54,7 @@ docker compose --env-file release.env up -d --force-recreate --wait --wait-timeo
 
 ## 知识同步查重与版本记录
 
-在「知识审核管理」打开待审稿，点击「检查重复与差异」，核对目标知识及字段对照。系统在 4.23 的知识类型、子类型及所选末级类别内优先匹配 DOI。缺少可比 DOI 时，使用归一化的稿件标题或原文标题。多个候选由审核人选择业务主键。查重结果和审批绑定到当前稿件修订号。
+在「审核与同步」打开待审稿，点击「检查重复与差异」，核对目标知识及字段对照。指南、书籍、期刊在所选类型和子类内以 DOI 或规范化标题匹配。疾病、检验等结构化知识按业务知识标题匹配，同篇论文可为不同知识提供依据。多个候选由审核人选择。名称有差异时可以查询同类型和子类的业务知识并指定目标；人工指定保留业务标题，显示实际要修改的字段。查重结果和审批绑定到当前稿件修订号。
 
 | 查重结果 | 审核通过后的处理 |
 | --- | --- |
@@ -136,7 +136,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.6'
+$version = '0.1.7'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)
@@ -208,6 +208,15 @@ JAR 应包含 `BOOT-INF/classes/static/index.html` 和 Vue assets。应用镜像
 ~~~
 
 基础镜像取自 Eclipse Temurin 官方 Docker 仓库的 Linux amd64 清单。服务器直拉超时后，从构建机下载并核对清单、镜像配置和各层的 SHA-256，经 SSH 传至服务器。现网沿用 CentOS 7 上已验证的本地 Docker 构建方式。基础镜像更新时按摘要核验新镜像和 Java 版本，并在切换前用新镜像执行应用验收。[Temurin 容器镜像](https://adoptium.net/installation/containers/) · [Compose 启动与健康等待](https://docs.docker.com/reference/cli/docker/compose/up/)
+
+## 0.1.7 写入 4.23 与回读
+
+从正式页面按「文献原文库 → 文献解析 → 审核与同步」验收一次外部文献。审核人核对业务目标、自动匹配或指定的主键、摘要、关联字典、附件和差异，再完成人工审批。点击「同步至 4.23」后从「查看写入记录」打开业务知识。回执中的「核验 4.23 当前内容」会重新读取业务详情、有效附件和 PDF 字节，逐项显示类别、标题、摘要和原件的比对结果。已处理的旧版本也可回读，若业务端之后有新的修订，结果会反映当下差异。
+
+- 新增使用 `/knowledge/save` 返回的 ID。变更使用同一保存接口并携带已审核的业务 ID。更新和附件引用补存均发送业务子类型、已有类别和应保留的字典关系。按 4.23 保存契约，省略关联参数可能清除原有关系。
+- 业务端知识附件以目录和上传名确定物理路径。新 PDF 的上传名由稿件 ID 与文件 SHA-256 组成，界面显示的附件名保留原名。绑定前下载校验，完成前核对业务正文与原件。4.23 无法完整列出附件、文件无法读取或回读不符时，先核对异常回执。
+- 业务端可能因正文更新触发自己的停用、重审或发布流程。查重与版本记录以实际业务主键为索引。历史上早于版本功能的新增由当时的执行事件识别，显示该笔新增的业务回执。
+- 此次升级复用 0.1.6 的 Oracle schema 和原件卷。可先将同一镜像接入独立 H2，关闭调度与业务写入，用真实出版社 PDF、模型和 4.23 读接口验证拟新增和拟更新。正式验收应使用已有获批记录回读。回退 0.1.6 后先暂停业务写入，该版本处理字典和同名 PDF 的行为见核查记录。[出站同步核查](collection-audit.md#017-从文献到业务知识)
 
 ## 0.1.6 业务资料与文献选采
 

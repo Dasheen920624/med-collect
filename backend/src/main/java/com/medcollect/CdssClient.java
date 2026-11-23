@@ -6,7 +6,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.net.URI;
-import java.net.URLDecoder;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -30,6 +31,7 @@ import javax.net.ssl.X509ExtendedTrustManager;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.UriUtils;
 
 @Component
 class CdssClient {
@@ -150,10 +152,10 @@ class CdssClient {
         throw new RemoteFailure("同名候选过多，请在 4.23 核对同步标识");
     }
 
-    String uploadPdf(String fileName, byte[] bytes) {
+    String uploadPdf(String draftId, byte[] bytes) {
         String boundary = "medcollect-" + id();
         var body = new ByteArrayOutputStream(bytes.length + 600);
-        String asciiName = fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
+        String asciiName = "mc-" + java.util.UUID.fromString(draftId) + "-" + sha(bytes) + ".pdf";
         body.writeBytes(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"knowledgeClassName\""
                 + "\r\n\r\nMedCollect\r\n--" + boundary
                 + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"" + asciiName
@@ -172,6 +174,7 @@ class CdssClient {
     boolean hasAttachment(String knowledgeId, String url) {
         JsonNode response = attachments(knowledgeId);
         for (JsonNode row : response) {
+            if (row.path("validFlag").asInt(1) != 1) continue;
             if (url.equals(row.path("knowledgeAffix").asText())) return true;
             if (url.equals(row.path("url").asText())) return true;
         }
@@ -179,41 +182,47 @@ class CdssClient {
     }
 
     JsonNode attachments(String knowledgeId) {
-        JsonNode response = data(form("/knowledge/query-affix", Map.of("knowledgeId", knowledgeId)));
-        if (!response.isArray()) throw new RemoteFailure("4.23 返回的附件列表不可识别");
-        return response;
+        var result = json.createArrayNode();
+        var seen = new HashSet<String>();
+        for (int page = 1; ; page++) {
+            var response = form("/knowledge/query-affix", Map.of("knowledgeId",knowledgeId,"page",Integer.toString(page),"rows","100"));
+            var rows = data(response);
+            if (!rows.isArray()) throw new RemoteFailure("4.23 返回的附件列表不可识别");
+            long total = response.path("total").asLong(-1);
+            int previous = result.size();
+            for (var row : rows) {
+                String key = row.path("id").asText("") + "/" + row.path("knowledgeAffix").asText(row.path("url").asText(""));
+                if (seen.add(key)) result.add(row);
+            }
+            if (total >= 0 ? result.size() >= total : rows.size() < 100) return result;
+            if (previous == result.size()) throw new RemoteFailure("4.23 附件列表未返回完整分页，暂时无法核对全部原件");
+        }
     }
 
     String pdfChecksum(String path) {
-        String name = trim(path).replaceFirst("^/", "");
-        if (!name.matches("[A-Za-z0-9_./%+-]+") || !name.matches("(?:[^%]|%[a-fA-F0-9]{2})+")) return null;
-        String decoded = URLDecoder.decode(name, StandardCharsets.UTF_8);
-        if (decoded.contains("..") || decoded.contains("\\") || decoded.startsWith("/")) return null;
-        var request = HttpRequest.newBuilder(URI.create(baseUrl(settings.cdssUrl()) + "/api/upload/view/" + name + "?preview=1"))
-                .timeout(Duration.ofSeconds(20)).header("Authorization", "Bearer " + token()).GET().build();
         try {
-            var response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            try (var in = response.body()) {
-                if (response.statusCode() != 200) return null;
-                byte[] bytes = in.readNBytes(DocumentReader.MAX_BYTES + 1);
-                if (bytes.length > DocumentReader.MAX_BYTES || bytes.length < 5
-                        || !"%PDF-".equals(new String(bytes, 0, 5, StandardCharsets.US_ASCII))) return null;
-                return sha(bytes);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RemoteFailure("4.23 附件核对已中断");
-        } catch (IOException e) {
+            byte[] bytes = readAttachment(path);
+            if (bytes.length < 5 || !"%PDF-".equals(new String(bytes,0,5,StandardCharsets.US_ASCII))) return null;
+            return sha(bytes);
+        } catch (IOException | RemoteFailure | org.springframework.web.server.ResponseStatusException e) {
             return null;
         }
     }
 
     String attachmentUrl(String path) {
-        String name=trim(path).replaceFirst("^/", "");
-        if (!name.matches("[A-Za-z0-9_./%+-]+") || !name.matches("(?:[^%]|%[a-fA-F0-9]{2})+")) throw bad("业务附件路径无效");
-        String decoded=URLDecoder.decode(name,StandardCharsets.UTF_8);
-        if(decoded.contains("..") || decoded.contains("\\") || decoded.startsWith("/")) throw bad("业务附件路径无效");
-        return baseUrl(settings.cdssUrl())+"/api/upload/view/"+name+"?preview=1";
+        String name = trim(path).replaceFirst("^/", "");
+        var encoded = new ArrayList<String>();
+        for (String segment : name.split("/",-1)) {
+            String decoded;
+            try { decoded = UriUtils.decode(segment,StandardCharsets.UTF_8); }
+            catch (IllegalArgumentException ex) { throw bad("业务附件路径无效"); }
+            if (decoded.isBlank() || decoded.equals(".") || decoded.equals("..") || decoded.contains("/")
+                    || decoded.contains("\\") || decoded.contains("%") || decoded.chars().anyMatch(Character::isISOControl)) {
+                throw bad("业务附件路径无效");
+            }
+            encoded.add(UriUtils.encodePathSegment(decoded, StandardCharsets.UTF_8));
+        }
+        return baseUrl(settings.cdssUrl()) + "/api/upload/view/" + String.join("/",encoded) + "?preview=1";
     }
 
     byte[] readAttachment(String path) throws IOException {
@@ -238,14 +247,6 @@ class CdssClient {
     }
 
     void prepareWrite() { token(); }
-
-    void verifyRecord(String id, String type, String marker) {
-        JsonNode item = knowledge(id);
-        if (!type.equals(item.path("type").asText())
-                || !item.path("remark").asText().contains(marker)) {
-            throw new RemoteFailure("4.23 未返回与同步标识一致的知识记录");
-        }
-    }
 
     String previewUrl(String id) {
         return baseUrl(settings.cdssUrl()) + "/knowledgePreview?id=" + encode(id);

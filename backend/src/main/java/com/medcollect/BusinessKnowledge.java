@@ -27,6 +27,10 @@ class BusinessKnowledge {
     enum Operation { CREATE, UPDATE, SKIP, CHOOSE }
     record Difference(String field, String before, String after) {}
     record Candidate(String id, String title, String knowledgeClass, String doi, String basis, String url) {}
+    record Receipt(String remoteId, String url, String type, String childType, String knowledgeClass,
+                   boolean categoryMatches, boolean titleMatches, boolean summaryMatches, Boolean pdfMatches) {
+        boolean verified() { return categoryMatches && titleMatches && summaryMatches && !Boolean.FALSE.equals(pdfMatches); }
+    }
     record Plan(Operation operation, String doi, Candidate target, List<Candidate> candidates,
                 List<Difference> differences, ObjectNode before, String baseline,
                 Map<String, String> form, boolean uploadPdf) {}
@@ -41,6 +45,7 @@ class BusinessKnowledge {
             "version", "source", "remark", "modifyTime", "lockStatus", "validFlag", "isStart",
             "submitStatus", "auditStatus", "releaseStatus", "content", "doi");
     private static final String REFERENCES = "references";
+    private static final String MANUAL_TARGET = "人工指定同类业务知识";
     private final ObjectMapper json;
     private final CdssClient cdss;
     private final KnowledgeTemplates templates;
@@ -81,6 +86,38 @@ class BusinessKnowledge {
         }
     }
 
+    Page<Candidate> targets(Knowledge draft, String query, int page) {
+        if (trim(query).isBlank() || page < 1) throw bad("请输入业务知识名称并选择有效页码");
+        var category = workflow.schema(draft).category();
+        var filters = scope(category,draft);
+        filters.put("name",query.strip());
+        var result = cdss.search(filters,page,15);
+        var rows = new ArrayList<Candidate>();
+        for (var item : result.rows()) {
+            if (inScope(item,draft,category)) rows.add(candidate(item,MANUAL_TARGET));
+        }
+        return new Page<>(rows,result.total(),page,15);
+    }
+
+    Plan manualPlan(Knowledge draft, Material material, String targetId) {
+        String id = BusinessLiterature.key(targetId);
+        var schema = workflow.schema(draft);
+        if (draft.updateTargetId() != null && !id.equals(draft.updateTargetId())) throw conflict("修订稿须沿用已关联的业务主键");
+        if ("4.23 知识管理".equals(material.sourceName()) && trim(material.externalRef()).startsWith("CDSS:" + schema.category().type() + ":")
+                && !material.externalRef().startsWith("CDSS:" + schema.category().type() + ":" + id + ":")) {
+            throw conflict("从同类业务记录取得的文献须沿用其原业务主键");
+        }
+        var before = snapshot(id,schema.category());
+        if (!inScope(before,draft,schema.category())) throw conflict("所选知识与稿件的业务类型或子类不符");
+        String doi = firstDoi(material.externalRef(),material.sourceUrl(),material.fetchedUrl());
+        String nativeDoi = remoteDoi(before);
+        if (isLiterature(schema.category().type()) && !doi.isBlank() && !nativeDoi.isBlank() && !doi.equals(nativeDoi)) {
+            throw conflict("两篇文献的 DOI 不同，请核对业务目标");
+        }
+        var target = candidate(before,MANUAL_TARGET);
+        return compare(draft,material,schema,doi,target,List.of(target),before);
+    }
+
     private List<Candidate> candidates(Knowledge draft, Material material, KnowledgeTemplates.Category category, String doi) {
         if (draft.updateTargetId() != null) {
             var item = cdss.knowledge(draft.updateTargetId());
@@ -95,17 +132,14 @@ class BusinessKnowledge {
                 throw conflict("这份业务文献的分类已变更，请核对来源后再审核");
             }
         }
-        var scope = new LinkedHashMap<String, String>();
-        scope.put("type", category.type());
-        if (category.childType() != null) scope.put("childType", category.childType());
-        if (!trim(draft.knowledgeClass()).isBlank()) scope.put("knowledgeClass", draft.knowledgeClass());
+        var scope = scope(category, draft);
         var matches = new LinkedHashMap<String, Candidate>();
-        if (!doi.isBlank()) {
+        if (!doi.isBlank() && isLiterature(category.type())) {
             search(scope, draft, material, category, doi, matches);
         } else {
             var terms = new LinkedHashSet<String>();
             terms.add(titleQuery(draft.title()));
-            terms.add(titleQuery(material.title()));
+            if (isLiterature(category.type())) terms.add(titleQuery(material.title()));
             terms.remove("");
             for (String title : terms) {
                 var filters = new LinkedHashMap<>(scope);
@@ -139,19 +173,34 @@ class BusinessKnowledge {
 
     private boolean inScope(JsonNode item, Knowledge draft, KnowledgeTemplates.Category category) {
         return category.type().equals(item.path("type").asText())
+                && item.path("validFlag").asInt(1) == 1
                 && trim(category.childType()).equals(item.path("childType").asText(""))
                 && (trim(draft.knowledgeClass()).isBlank() || draft.knowledgeClass().equals(item.path("knowledgeClass").asText()));
     }
 
+    private Map<String,String> scope(KnowledgeTemplates.Category category, Knowledge draft) {
+        var filters = new LinkedHashMap<String,String>();
+        filters.put("type", category.type());
+        if (List.of("17","30","31").contains(category.type())) filters.put("guideType", category.type());
+        if (category.childType() != null) filters.put("childType", category.childType());
+        if (!trim(draft.knowledgeClass()).isBlank()) filters.put("knowledgeClass", draft.knowledgeClass());
+        return filters;
+    }
+
     private String match(JsonNode row, Knowledge draft, Material material, String doi) {
+        String existing = titleKey(row.path("name").asText());
+        if (!isLiterature(row.path("type").asText())) {
+            return !existing.isBlank() && existing.equals(titleKey(draft.title())) ? "类别及知识标题一致" : null;
+        }
         String remoteDoi = remoteDoi(row);
         if (!doi.isBlank() && !remoteDoi.isBlank()) return doi.equals(remoteDoi) ? "DOI 一致" : null;
-        String existing = titleKey(row.path("name").asText());
         if (!existing.isBlank() && (existing.equals(titleKey(draft.title())) || existing.equals(titleKey(material.title())))) {
             return "类别及标题一致";
         }
         return null;
     }
+
+    private boolean isLiterature(String type) { return List.of("17","30","31").contains(type); }
 
     private Candidate candidate(JsonNode row, String basis) {
         String id = row.path("id").asText();
@@ -165,7 +214,8 @@ class BusinessKnowledge {
         ObjectNode oldLayout = layout(original);
         ObjectNode merged = oldLayout == null ? incoming.deepCopy() : oldLayout.deepCopy();
         var changes = new ArrayList<Difference>();
-        add(changes, "标题", original.path("name").asText(), draft.title());
+        String savedTitle = MANUAL_TARGET.equals(target.basis()) ? original.path("name").asText() : draft.title();
+        add(changes, "标题", original.path("name").asText(), savedTitle);
         if (oldLayout == null && !original.path("content").asText("").isBlank()) {
             add(changes, "原有正文", display(original.path("content")), "按已审核稿件转换为模板正文");
         }
@@ -193,13 +243,12 @@ class BusinessKnowledge {
                 add(changes, relationLabel(key), String.join("、", existing), String.join("、", value));
             }
         });
-        boolean attach = material.pdf() && original.path("attachments").valueStream().filter(this::isPdf)
-                .noneMatch(item -> material.sha256().equals(cdss.pdfChecksum(item.path("path").asText())));
+        boolean attach = material.pdf() && !hasOriginal(original, material);
         if (attach) {
             changes.add(new Difference("PDF 原件", "现有附件保留", material.fileName() + " · SHA-256 " + material.sha256()));
         }
         var form = new LinkedHashMap<String, String>();
-        form.put("name", draft.title());
+        form.put("name", savedTitle);
         form.put("type", schema.category().type());
         form.put("content", merged.toString());
         form.put("remark", updateRemark(original.path("remark").asText(""), draft.id(), doi));
@@ -247,13 +296,81 @@ class BusinessKnowledge {
             if (!sameValue(key, desired.path("content").path(key), actual.path("content").path(key))) return false;
         }
         for (var property : plan.before().properties()) {
-            if (!property.getValue().isArray()) continue;
+            if (!property.getValue().isArray() || property.getKey().equals("attachments")) continue;
             String key = property.getKey();
-            List<String> expected = plan.form().containsKey(key) ? List.of(plan.form().get(key)) : plan.form().entrySet().stream()
-                    .filter(entry -> entry.getKey().startsWith(key + "[")).map(Map.Entry::getValue).sorted().toList();
-            if (!expected.isEmpty() && !expected.equals(relation(current.path(key)))) return false;
+            if (!reviewedRelation(plan, key).equals(relation(current.path(key)))) return false;
+        }
+        var currentFiles = current.path("attachments").valueStream().map(file -> file.path("path").asText()).toList();
+        for (var old : plan.before().path("attachments")) {
+            if (!"1".equals(old.path("type").asText()) && !currentFiles.contains(old.path("path").asText())) return false;
         }
         return true;
+    }
+
+    private List<String> reviewedRelation(Plan plan, String key) {
+        if (plan.form().containsKey(key)) return List.of(plan.form().get(key));
+        var supplied = plan.form().entrySet().stream().filter(e -> e.getKey().startsWith(key + "["))
+                .map(Map.Entry::getValue).distinct().sorted().toList();
+        return supplied.isEmpty() ? relation(plan.before().path(key)) : supplied;
+    }
+
+    // The native save operation rebuilds type-specific dictionary links even when the caller only changes content.
+    Map<String,String> updateForm(Plan plan, KnowledgeTemplates.Category category, String content) {
+        var payload = new LinkedHashMap<>(plan.form());
+        if (category.childType() != null) payload.put("childType", category.childType());
+        String classCode = plan.before().path("knowledgeClass").asText("");
+        if (!classCode.isBlank()) payload.put("knowledgeClass", classCode);
+        for (String key : category.relations()) {
+            putRelations(payload, Map.of(key, reviewedRelation(plan,key)));
+        }
+        payload.put("content", content);
+        return payload;
+    }
+
+    private boolean hasOriginal(ObjectNode snapshot, Material material) {
+        boolean unreadable = false;
+        for (var file : snapshot.path("attachments")) {
+            if (!isPdf(file)) continue;
+            String checksum = cdss.pdfChecksum(file.path("path").asText());
+            if (material.sha256().equals(checksum)) return true;
+            if (checksum == null) unreadable = true;
+        }
+        if (unreadable) throw new CdssClient.RemoteFailure("4.23 有 PDF 无法核对原件校验值，请恢复文件读取后重试");
+        return false;
+    }
+
+    Receipt receipt(Knowledge draft, Material material, ObjectNode actual, Plan plan) {
+        var schema = workflow.schema(draft);
+        var desired = templates.cdssContent(schema,material,draft.summary(),workflow.fields(draft)).path("content");
+        String key = templates.summaryKey(schema, material);
+        var body = layout(actual);
+        String remote = actual.path("id").asText();
+        String expectedClass = plan != null && plan.before() != null ? plan.before().path("knowledgeClass").asText("") : trim(draft.knowledgeClass());
+        return new Receipt(remote, cdss.previewUrl(remote), actual.path("type").asText(), actual.path("childType").asText(""),
+                actual.path("knowledgeClass").asText(""), inScope(actual,draft,schema.category()) && expectedClass.equals(actual.path("knowledgeClass").asText("")),
+                (plan != null ? plan.form().getOrDefault("name",draft.title()) : draft.title()).equals(actual.path("name").asText()), body != null && desired.hasNonNull(key)
+                        && sameValue(key, desired.path(key), body.path("content").path(key)),
+                material.pdf() ? hasOriginal(actual, material) : null);
+    }
+
+    void verifyCreated(Knowledge draft, Material material, ObjectNode actual) {
+        var schema = workflow.schema(draft);
+        var desired = templates.cdssContent(schema,material,draft.summary(),workflow.fields(draft)).path("content");
+        var body = layout(actual);
+        if (!actual.path("remark").asText().contains(marker(draft.id())) || !receipt(draft,material,actual,null).verified()
+                || !trim(draft.knowledgeClass()).equals(actual.path("knowledgeClass").asText("")) || body == null) {
+            throw new CdssClient.RemoteFailure("4.23 新增回读的标题、类别、摘要或 PDF 与审核稿不一致");
+        }
+        for (var field : desired.properties()) {
+            if (!sameValue(field.getKey(),field.getValue(),body.path("content").path(field.getKey()))) {
+                throw new CdssClient.RemoteFailure("4.23 未保存审核字段 " + field.getKey());
+            }
+        }
+        workflow.relations(draft).forEach((key, values) -> {
+            if (!values.stream().distinct().sorted().toList().equals(relation(actual.path(key)))) {
+                throw new CdssClient.RemoteFailure("4.23 未保存已审核的" + relationLabel(key));
+            }
+        });
     }
 
     String restoreReferences(Plan plan, ObjectNode current) {
@@ -438,8 +555,11 @@ class BusinessKnowledge {
     }
 
     private String titleQuery(String title) {
-        // A literal prefix keeps the remote LIKE query narrow while allowing trailing punctuation differences.
-        return limit(Normalizer.normalize(trim(title), Normalizer.Form.NFKC).replaceFirst("[,，%_].*$", ""), 60).strip();
+        // Native name search is a literal LIKE; compare normalized full titles locally after finding a shared word.
+        var words = Pattern.compile("[\\p{L}\\p{N}]+").matcher(Normalizer.normalize(trim(title), Normalizer.Form.NFKC));
+        String longest = "";
+        while (words.find()) if (words.group().length() > longest.length()) longest = words.group();
+        return limit(longest,60);
     }
 
     private String titleKey(String title) {

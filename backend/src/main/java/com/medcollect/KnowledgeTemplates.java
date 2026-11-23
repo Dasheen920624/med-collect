@@ -148,7 +148,7 @@ class KnowledgeTemplates {
             return code.equals("24") ? options.stream().filter(o->TCM_CLASSES.stream().anyMatch(c->c.code().equals(o.code()))).toList() : options;
         }
         try {
-            List<ClassOption> live = liveClasses(category.classRoot());
+            List<ClassOption> live = liveClasses(category.classRoot(),false);
             if (!live.isEmpty()) {
                 if (code.equals("24")) return live.stream()
                         .filter(option -> TCM_CLASSES.stream().anyMatch(c -> c.code().equals(option.code()))).toList();
@@ -168,17 +168,17 @@ class KnowledgeTemplates {
             if (category.classRequired()) throw bad("请选择目标系统中的知识子类");
             return;
         }
-        List<ClassOption> allowed = live ? liveClasses(category.classRoot()) : classes(category.code());
+        List<ClassOption> allowed = live ? liveClasses(category.classRoot(),true) : classes(category.code());
         if (allowed.stream().noneMatch(c -> value.equals(c.code()))
                 || (category.code().equals("24") && TCM_CLASSES.stream().noneMatch(c -> value.equals(c.code())))) {
             throw bad("知识子类不属于当前类型，或已从 4.23 类别字典移除");
         }
     }
 
-    private List<ClassOption> liveClasses(String root) {
+    private List<ClassOption> liveClasses(String root, boolean fresh) {
         if (!cdss.configured()) return List.of();
         Cache<List<ClassOption>> found = classCache.get(root);
-        if (found != null && clock.millis() < found.expires()) return found.value();
+        if (!fresh && found != null && clock.millis() < found.expires()) return found.value();
         JsonNode rows = cdss.classes(rootCode(root));
         var options = new LinkedHashMap<String, ClassOption>();
         for (JsonNode row : rows) {
@@ -262,11 +262,14 @@ class KnowledgeTemplates {
 
     private long expires() { return clock.millis() + Duration.ofMinutes(15).toMillis(); }
 
+    String summaryKey(Schema schema, Records.Material material) {
+        return material.pdf() && !List.of("abstract","summary").contains(schema.summaryKey()) ? "abstract" : schema.summaryKey();
+    }
+
     ObjectNode cdssContent(Schema schema, Records.Material material, String summary, Map<String, String> fields) {
         ObjectNode layout = schema.layout().deepCopy();
-        String summaryKey = schema.summaryKey();
-        if (material.pdf() && !List.of("abstract", "summary").contains(summaryKey)) {
-            summaryKey = "abstract";
+        String summaryKey = summaryKey(schema,material);
+        if (!summaryKey.equals(schema.summaryKey())) {
             ensureSection((ArrayNode) layout.path("catalog"), schema.fields(), summaryKey, "摘要");
         }
         var content = layout.putObject("content");
