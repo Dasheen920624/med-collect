@@ -83,6 +83,11 @@ class TemplateProfiles {
                 .map(KnowledgeTemplates.Field::id).collect(Collectors.toSet());
     }
 
+    java.util.List<Records.Event> events(String code, String knowledgeClass) {
+        var base = templates.schema(code, knowledgeClass);
+        return store.events("TEMPLATE", sha(key(base)).substring(0, 36));
+    }
+
     private String key(KnowledgeTemplates.Schema schema) {
         return schema.category().code() + ":" + trim(schema.knowledgeClass());
     }

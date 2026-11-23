@@ -1,18 +1,23 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { History, Play, Plus, RefreshCw, Sparkles, Upload } from '@lucide/vue'
+import { History, Play, RefreshCw, Sparkles, Upload } from '@lucide/vue'
 import { api, list, send } from '../api'
-import { date, modes, resultStates, runStates } from '../labels'
+import { date, dateRange, modes, resultStates, runStates, scheduleText } from '../labels'
 import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
+import UploadOriginal from '../components/UploadOriginal.vue'
 import Events from '../components/Events.vue'
 import Pagination from '../components/Pagination.vue'
 import StateBadge from '../components/StateBadge.vue'
 
-const props = defineProps({ session: Object, detail: String })
+const props = defineProps({ session: Object, detail: String, subjectId: String })
 const emit = defineEmits(['navigate', 'notice'])
-const table = ref({ rows: [], total: 0, page: 1, size: 20 })
-const filters = ref({ query: '', mode: '', sourceId: '', enabled: '' })
+const table = ref({ rows: [], total: 0, page: 1, size: 10 })
+const initialFilters = () => ({ query: '', mode: '', sourceId: '', enabled: '', state: '', from: '', until: '' })
+const filters = ref(initialFilters())
+const pageSize = ref(10)
+const uploadTask = ref(null)
+let request = 0
 const sources = ref([])
 const selectedTask = ref(null)
 const selectedRun = ref(null)
@@ -39,21 +44,23 @@ function taskInput(mode = 'URL') {
 }
 
 async function load(page = table.value.page) {
+  const seq = ++request
   loading.value = true
   try {
-    table.value = await list('/tasks', { ...filters.value, page, size: 20 })
-    error.value = ''
-  } catch (e) { error.value = e.message }
-  finally { loading.value = false }
+    const { from, until, ...rest } = filters.value
+    const result = await list('/tasks', { ...rest, ...dateRange(from, until), subjectId: props.subjectId, page, size: pageSize.value })
+    if (seq === request) { table.value = result; error.value = '' }
+  } catch (e) { if (seq === request) error.value = e.message }
+  finally { if (seq === request) loading.value = false }
 }
 
-async function edit(task) {
+async function edit(task, quick = '') {
   try {
     const detail = task ? await api('/tasks/' + task.id) : null
-    const entry = detail?.task || taskInput()
+    const entry = detail?.task || taskInput(quick || 'URL')
     const urls = detail?.urls?.length ? detail.urls : entry.mode === 'URL' && entry.queryText ? [entry.queryText] : []
     const ids = detail?.sourceIds?.length ? detail.sourceIds : entry.sourceId ? [entry.sourceId] : []
-    editing.value = { ...entry, sourceId: entry.sourceId || '', sourceIds: ids, targetUrls: urls.join('\n'),
+    editing.value = { ...entry, quick, targetMode: 'address', sourceId: entry.sourceId || '', sourceIds: ids, targetUrls: urls.join('\n'),
       scheduleMode: scheduleMode(entry), scheduleLocal: localDate(entry.scheduleAt), dailyTime: entry.dailyTime || '',
       selectResults: entry.selectResults ?? true }
     drawerError.value = ''
@@ -66,32 +73,29 @@ function localDate(value) {
   const time = new Date(value)
   return new Date(time.getTime() - time.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
 }
-function scheduleText(task) {
-  const mode = scheduleMode(task)
-  if (mode === 'INTERVAL') return '每 ' + task.intervalMinutes + ' 分钟'
-  if (mode === 'DAILY') return '每日 ' + task.dailyTime + '（北京时间）'
-  if (mode === 'ONCE') return '单次 · ' + date(task.scheduleAt, true)
-  return scheduleModes.MANUAL
-}
-
 async function save() {
   busy.value = true
   drawerError.value = ''
   const form = editing.value
   try {
     const mode = form.mode === 'UPLOAD' ? 'MANUAL' : form.scheduleMode
-    await send(form.id ? '/tasks/' + form.id : '/tasks', {
-      ...form, intervalMinutes: mode === 'INTERVAL' ? form.intervalMinutes : 0, scheduleMode: mode,
+    const urls = form.quick === 'URL' && form.targetMode === 'source' ? [] : form.targetUrls.split(/\r?\n/).map(u => u.trim()).filter(Boolean)
+    const selectedSources = form.quick === 'URL' && form.targetMode === 'address' ? [] : form.sourceIds
+    const generatedName = form.queryText || urls[0] || sources.value.find(s => selectedSources.includes(s.id))?.name || modes[form.mode]
+    const saved = await send(form.id ? '/tasks/' + form.id : '/tasks', {
+      ...form, name: form.name || Array.from(modes[form.mode] + '：' + generatedName).slice(0,120).join(''), intervalMinutes: mode === 'INTERVAL' ? form.intervalMinutes : 0, scheduleMode: mode,
       scheduleAt: mode === 'ONCE' && form.scheduleLocal ? new Date(form.scheduleLocal).getTime() : null,
-      urls: form.mode === 'URL' ? form.targetUrls.split(/\r?\n/).map(url => url.trim()).filter(Boolean) : [],
+      urls: form.mode === 'URL' ? urls : [],
       sourceIds: form.mode === 'EUROPE_PMC' ? [] : form.mode === 'UPLOAD'
-        ? (form.sourceId ? [form.sourceId] : []) : form.sourceIds,
+        ? (form.sourceId ? [form.sourceId] : []) : selectedSources,
       selectResults: form.mode === 'WEB' && form.selectResults,
     }, form.id ? 'PUT' : 'POST')
     editing.value = null
     emit('notice', '采集任务已保存')
-    if (selectedTask.value?.task.id === form.id) await openTask(form.id)
     await load(1)
+    if (form.quick && mode === 'MANUAL' && !form.id) {
+      await run(saved)
+    } else if (selectedTask.value?.task.id === form.id) await openTask(form.id)
   } catch (e) { drawerError.value = e.message }
   finally { busy.value = false }
 }
@@ -134,7 +138,7 @@ function taskName(id) { return table.value.rows.find(task => task.id === id)?.na
 
 async function run(task) {
   if (task.mode === 'UPLOAD') {
-    emit('navigate', 'materials', 'upload:' + task.id)
+    uploadTask.value = task.id
     return
   }
   busy.value = true
@@ -143,7 +147,7 @@ async function run(task) {
     emit('notice', '已发起采集，可查看执行详情')
     await openRun(result.id)
     await load()
-  } catch (e) { error.value = e.message }
+  } catch (e) { error.value = e.message; emit('notice',e.message) }
   finally { busy.value = false }
 }
 
@@ -205,57 +209,76 @@ onMounted(async () => {
   }, 2800)
 })
 onUnmounted(() => clearInterval(poll))
-watch(() => props.detail, applyDetail)
+watch(() => props.detail, async detail => {
+  selectedTask.value = null
+  selectedRun.value = null
+  history.value = null
+  editing.value = null
+  filters.value = initialFilters()
+  if (detail) await applyDetail(detail)
+  else await load(1)
+})
+watch(() => props.subjectId, () => load(1))
+
+function resultText(r) {
+  if (!r) return '—'
+  const counts = [[r.candidateCount,'条搜索结果'],[r.newCount,'份原文'],[r.metadataCount,'条来源记录'],[r.duplicateCount,'份重复'],[r.failureCount,'份失败']]
+  return counts.filter(([n]) => n > 0).map(([n,name]) => n + ' ' + name).join(' · ') || '0 份原文'
+}
 </script>
 
 <template>
   <section class="page-head">
-    <div><h1>知识采集管理</h1><p>设置采集目标和执行计划，查看每次搜索、采集及失败明细。</p></div>
-    <div class="actions">
-      <button class="button secondary" @click="showHistory()"><History :size="18" /> 执行记录</button>
-      <button v-if="session.admin" class="button secondary" @click="openPlanner"><Sparkles :size="18" /> 智能规划</button>
-      <button v-if="session.admin" class="button primary" @click="edit()"><Plus :size="19" /> 新建任务</button>
+    <h1>知识采集管理</h1>
+    <div v-if="session.admin" class="actions">
+      <button class="button secondary" @click="edit(null,'URL')">指定网址下载</button>
+      <button class="button secondary" @click="uploadTask = ''">手工上传</button>
+      <button class="button primary" :disabled="!session.webSearch" :title="session.webSearch ? '' : '请先配置全网搜索服务'" @click="edit(null,'WEB')">全网搜索</button>
     </div>
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
   <section class="panel">
-    <div class="panel-head"><h2>任务列表</h2><button class="icon-button" aria-label="刷新任务" :disabled="loading" @click="load()"><RefreshCw :size="17" /></button></div>
+    <div class="panel-head"><h2>采集任务列表</h2><div class="actions">
+      <button class="link" @click="showHistory()"><History :size="15" /> 执行记录</button>
+      <button v-if="session.admin" class="link" @click="edit(null,'EUROPE_PMC')">文献检索</button>
+      <button v-if="session.admin" class="link" @click="openPlanner"><Sparkles :size="15" /> 智能规划</button>
+      <button class="icon-button" aria-label="刷新任务" :disabled="loading" @click="load()"><RefreshCw :size="15" /></button></div></div>
     <form class="filters" @submit.prevent="load(1)">
-      <input v-model.trim="filters.query" aria-label="搜索任务" placeholder="搜索任务或采集内容" maxlength="400" />
-      <select v-model="filters.mode" aria-label="采集方式" @change="load(1)">
-        <option value="">全部采集方式</option><option v-for="(name, mode) in modes" :key="mode" :value="mode">{{ name }}</option>
-      </select>
-      <select v-model="filters.sourceId" aria-label="资料来源" @change="load(1)">
-        <option value="">全部资料来源</option><option v-for="source in sources" :key="source.id" :value="source.id">{{ source.name }}</option>
-      </select>
-      <select v-model="filters.enabled" aria-label="计划状态" @change="load(1)">
-        <option value="">全部计划状态</option><option value="true">已启用</option><option value="false">已暂停</option>
-      </select>
-      <button class="button secondary" :disabled="loading">查询</button>
+      <label class="filter-field">任务状态<select v-model="filters.state"><option value="">全部状态</option>
+        <option value="WAITING">待执行</option><option v-for="(name,k) in runStates" :key="k" :value="k">{{ name }}</option></select></label>
+      <label class="filter-field">采集方式<select v-model="filters.mode"><option value="">全部方式</option>
+        <option v-for="(name,k) in modes" :key="k" :value="k">{{ name }}</option></select></label>
+      <label class="filter-field">创建时间<input v-model="filters.from" aria-label="创建开始日期" type="date" :max="filters.until" /></label>
+      <span>至</span><input v-model="filters.until" aria-label="创建结束日期" type="date" :min="filters.from" />
+      <button class="button primary" :disabled="loading">查询</button>
+      <button type="button" class="button secondary" @click="filters = initialFilters(); load(1)">重置</button>
+      <details class="extra-filters"><summary>更多筛选</summary><div class="actions">
+        <input v-model.trim="filters.query" aria-label="搜索任务" placeholder="搜索任务或采集内容" maxlength="400" />
+        <select v-model="filters.sourceId" aria-label="资料来源"><option value="">全部资料来源</option>
+          <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.name }}</option></select>
+        <select v-model="filters.enabled" aria-label="计划状态"><option value="">全部计划状态</option><option value="true">已启用</option><option value="false">已暂停</option></select>
+      </div></details>
     </form>
     <div v-if="table.rows.length" class="table-wrap">
-      <table><thead><tr><th>任务名称</th><th>采集方式</th><th>执行计划</th><th>下次执行</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody><tr v-for="task in table.rows" :key="task.id">
-          <td><button class="link" @click="openTask(task.id)">{{ task.name }}</button>
-            <small class="subline truncate" :title="task.queryText">{{ task.queryText || '—' }}</small></td>
-          <td>{{ modes[task.mode] }}<small v-if="task.captureMode === 'LINKS'" class="subline">栏目链接</small></td>
-          <td>{{ scheduleText(task) }}</td>
-          <td>{{ date(task.nextRunAt) }}</td>
-          <td><StateBadge :state="working(task) ? 'RUNNING' : task.enabled ? 'ACTIVE' : 'OFF'"
-            :labels="{ ...runStates, ACTIVE: '可执行', OFF: '已暂停' }" /></td>
-          <td><div class="table-actions">
-            <button v-if="session.admin" class="link" :disabled="working(task) || busy" @click="run(task)">
-              {{ task.mode === 'UPLOAD' ? '上传' : task.selectResults ? '搜索' : '执行' }}
-            </button>
+      <table><thead><tr><th>序号</th><th>任务标题</th><th>采集方式</th><th>创建时间</th><th>执行计划</th><th>采集结果</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="(task,i) in table.rows" :key="task.id">
+          <td>{{ (table.page - 1) * table.size + i + 1 }}</td><td><button class="link" @click="openTask(task.id)">{{ task.name }}</button></td>
+          <td>{{ modes[task.mode] }}</td><td>{{ date(task.createdAt,true) }}</td>
+          <td>{{ scheduleText(task) }}<small v-if="!task.enabled" class="subline">计划已暂停</small></td>
+          <td><button v-if="task.latestRun" class="link" @click="openRun(task.latestRun.id)">{{ resultText(task.latestRun) }}</button><span v-else>—</span></td>
+          <td><StateBadge :state="task.latestRun?.status || 'WAITING'" :labels="{...runStates,WAITING:'待执行'}" /></td>
+          <td><div class="table-actions"><button class="link" @click="openTask(task.id)">详情</button>
             <button v-if="session.admin" class="link" :disabled="working(task)" @click="edit(task)">编辑</button>
-            <button v-if="!session.admin" class="link" @click="openTask(task.id)">详情</button>
+            <button v-if="session.admin" class="link" :disabled="working(task) || busy" @click="run(task)">{{ task.mode === 'UPLOAD' ? '上传' : task.selectResults ? '搜索' : '执行' }}</button>
           </div></td>
         </tr></tbody>
       </table>
     </div>
-    <EmptyState v-else :title="loading ? '正在读取任务' : '暂无采集任务'" detail="支持指定网址、医学文献检索和手工上传。" />
-    <Pagination v-bind="table" @change="load" />
+    <EmptyState v-else :title="loading ? '正在读取任务' : '暂无匹配任务'" />
+    <Pagination v-bind="table" resizable @change="load" @resize="pageSize = $event; load(1)" />
   </section>
+  <UploadOriginal v-if="uploadTask !== null" :task-id="uploadTask" @notice="emit('notice',$event)" @close="uploadTask = null"
+    @complete="uploadTask = null; load(1); openTask($event.taskId)" />
 
   <Drawer v-if="history" title="执行记录" wide @close="history = null">
     <div v-if="history.rows.length" class="table-wrap">
@@ -299,18 +322,22 @@ watch(() => props.detail, applyDetail)
     </template>
   </Drawer>
 
-  <Drawer v-if="editing" :title="editing.id ? '编辑采集任务' : '新建采集任务'" :busy="busy" @close="editing = null">
+  <Drawer v-if="editing" :title="editing.id ? '编辑采集任务' : modes[editing.quick] || '新建采集任务'" :busy="busy" @close="editing = null">
     <form id="task-form" class="form-grid" @submit.prevent="save">
-      <label>任务名称<input v-model.trim="editing.name" required maxlength="120" placeholder="例如 成人高血压管理指南" /></label>
-      <label>采集方式<select v-model="editing.mode"><option v-for="(name, code) in availableModes" :key="code" :value="code">{{ name }}</option></select></label>
+      <label>任务名称<input v-model.trim="editing.name" :required="!editing.quick" maxlength="120" placeholder="例如 成人高血压管理指南" /></label>
+      <label v-if="!editing.quick">采集方式<select v-model="editing.mode"><option v-for="(name, code) in availableModes" :key="code" :value="code">{{ name }}</option></select></label>
       <label v-if="editing.mode === 'UPLOAD'">资料来源<select v-model="editing.sourceId">
         <option value="">直接指定</option><option v-for="item in sources.filter(item => item.enabled || item.id === editing.sourceId)"
           :key="item.id" :value="item.id">{{ item.name }}{{ item.enabled ? '' : '（已停用）' }}</option></select></label>
-      <label v-if="editing.mode === 'URL' || editing.mode === 'WEB'">资料来源（可多选）<select v-model="editing.sourceIds" multiple>
+      <fieldset v-if="editing.quick === 'URL'" class="form-choice"><legend>采集方式</legend><div class="choice-row">
+        <label class="check"><input type="radio" value="address" v-model="editing.targetMode" />输入网址</label>
+        <label class="check"><input type="radio" value="source" v-model="editing.targetMode" />选择已配置来源</label>
+      </div></fieldset>
+      <label v-if="(editing.mode === 'URL' && (editing.quick !== 'URL' || editing.targetMode === 'source')) || editing.mode === 'WEB'">资料来源（可多选）<select v-model="editing.sourceIds" multiple :required="editing.quick === 'URL' && editing.targetMode === 'source'">
         <option v-for="item in sources.filter(item => item.enabled || editing.sourceIds.includes(item.id))"
           :key="item.id" :value="item.id">{{ item.name }}{{ item.accessState === 'PENDING' ? '（待授权）' : '' }}</option>
       </select></label>
-      <label v-if="editing.mode === 'URL'">采集网址（每行一个）<textarea v-model="editing.targetUrls" rows="3" :required="!editing.sourceIds.length" placeholder="https://…" /></label>
+      <label v-if="editing.mode === 'URL' && (editing.quick !== 'URL' || editing.targetMode === 'address')">资料地址（每行一个）<textarea v-model="editing.targetUrls" rows="3" :required="editing.quick === 'URL' || !editing.sourceIds.length" placeholder="https://…" /></label>
       <label v-if="editing.mode === 'EUROPE_PMC' || editing.mode === 'WEB'">检索关键词<input v-model.trim="editing.queryText" required maxlength="1000" placeholder="例如 hypertension guideline" /></label>
       <div v-if="editing.mode === 'URL'" class="choice-row">
         <label class="check"><input v-model="editing.captureMode" type="radio" value="SINGLE" /> 单一网页或文件</label>
@@ -319,19 +346,21 @@ watch(() => props.detail, applyDetail)
       <label v-if="editing.mode === 'WEB'" class="check"><input v-model="editing.selectResults" type="checkbox" /> 先搜索，再人工选择结果采集</label>
       <div v-if="editing.mode !== 'UPLOAD'" class="form-grid">
         <label>执行计划<select v-model="editing.scheduleMode">
-          <option v-for="(name, mode) in scheduleModes" :key="mode" :value="mode">{{ name }}</option>
+          <option v-for="(name, mode) in scheduleModes" :key="mode" :value="mode">{{ mode === 'MANUAL' && editing.quick ? '立即执行' : name }}</option>
         </select></label>
         <label v-if="editing.scheduleMode === 'INTERVAL'">间隔（分钟）<input v-model.number="editing.intervalMinutes" type="number" min="1" max="525600" required /></label>
         <label v-if="editing.scheduleMode === 'ONCE'">执行时间<input v-model="editing.scheduleLocal" type="datetime-local" required /></label>
         <label v-if="editing.scheduleMode === 'DAILY'">每天执行时间（北京时间）<input v-model="editing.dailyTime" type="time" required /></label>
-        <label>单次结果上限<input v-model.number="editing.resultLimit" type="number" min="1" max="20" required /></label>
+        <label>采集数量<input v-model.number="editing.resultLimit" type="number" list="capture-limits" min="1" max="100" required />
+          <datalist id="capture-limits"><option v-for="n in [5,10,20,50,100]" :key="n" :value="n" /></datalist>
+          <small>每次最多 100 条，结果不足时按实际数量。</small></label>
         <label v-if="editing.scheduleMode !== 'MANUAL'" class="check"><input v-model="editing.enabled" type="checkbox" /> 启用定时计划</label>
       </div>
       <p v-if="drawerError" class="message error" role="alert">{{ drawerError }}</p>
     </form>
     <template #footer>
       <button class="button secondary" :disabled="busy" @click="editing = null">取消</button>
-      <button class="button primary" form="task-form" :disabled="busy">保存任务</button>
+      <button class="button primary" form="task-form" :disabled="busy">{{ editing.quick && editing.scheduleMode === 'MANUAL' ? (editing.mode === 'WEB' ? '开始搜索' : '立即采集') : '保存任务' }}</button>
     </template>
   </Drawer>
 

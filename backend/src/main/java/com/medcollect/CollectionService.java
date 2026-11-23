@@ -52,8 +52,15 @@ class CollectionService {
         this.workers = workers;
     }
 
-    List<Source> sources() {
-        return store.db().sql("SELECT * FROM mc_source ORDER BY created_at DESC").query(Source.class).list();
+    record SourceRow(String id, String name, String url, String note, boolean enabled, long createdAt,
+                     AccessState accessState, long taskCount) {}
+
+    List<SourceRow> sources() {
+        return store.db().sql("""
+                SELECT s.*, (SELECT COUNT(*) FROM mc_task t WHERE t.source_id = s.id OR EXISTS
+                  (SELECT 1 FROM mc_task_source ts WHERE ts.task_id = t.id AND ts.source_id = s.id)) task_count
+                FROM mc_source s ORDER BY s.created_at DESC, s.id
+                """).query(SourceRow.class).list();
     }
 
     @Transactional
@@ -81,7 +88,16 @@ class CollectionService {
         return store.source(sourceId);
     }
 
-    Page<Task> tasks(String query, Mode mode, String sourceId, Boolean enabled, int page, int size) {
+    @Transactional
+    void enableSource(String id, boolean enabled, String actor) {
+        store.source(id);
+        int changed = store.db().sql("UPDATE mc_source SET enabled = :enabled WHERE id = :id AND enabled <> :enabled")
+                .param("enabled", enabled ? 1 : 0).param("id", id).update();
+        if (changed > 0) store.event("SOURCE", id, "UPDATED", actor, enabled ? "启用来源" : "停用来源");
+    }
+
+    Page<TaskSummary> tasks(String query, Mode mode, String sourceId, Boolean enabled, String state, Long fromTime,
+                            Long untilTime, String subjectId, int page, int size) {
         var params = new HashMap<String, Object>();
         String from = "FROM mc_task t WHERE 1=1";
         if (!trim(query).isBlank()) {
@@ -101,7 +117,27 @@ class CollectionService {
             from += " AND t.enabled = :enabled";
             params.put("enabled", enabled ? 1 : 0);
         }
-        return store.page("t.*", from, "t.created_at DESC, t.id", params, page, size, Task.class);
+        from += Classifications.taskScope(subjectId, params);
+        if (!trim(state).isBlank()) {
+            from += " AND COALESCE((SELECT r.status FROM mc_run r WHERE r.task_id = t.id"
+                    + " ORDER BY r.started_at DESC, r.id DESC FETCH FIRST 1 ROW ONLY), 'WAITING') = :state";
+            params.put("state", state);
+        }
+        if (fromTime != null) { from += " AND t.created_at >= :fromTime"; params.put("fromTime", fromTime); }
+        if (untilTime != null) { from += " AND t.created_at < :untilTime"; params.put("untilTime", untilTime); }
+        Page<Task> result = store.page("t.*", from, "t.created_at DESC, t.id", params, page, size, Task.class);
+        var recent = new HashMap<String, RunOverview>();
+        if (!result.rows().isEmpty()) {
+            store.db().sql("""
+                    SELECT r.task_id, r.id, r.status, r.new_count, r.duplicate_count, r.failure_count, r.metadata_count,
+                      (SELECT COUNT(*) FROM mc_run_result p WHERE p.run_id = r.id AND p.status = 'CANDIDATE') candidate_count
+                    FROM (SELECT x.*, ROW_NUMBER() OVER(PARTITION BY task_id ORDER BY started_at DESC, id DESC) rn
+                      FROM mc_run x WHERE x.task_id IN (:ids)) r WHERE r.rn = 1
+                    """).param("ids", result.rows().stream().map(Task::id).toList()).query(RunOverview.class).list()
+                    .forEach(run -> recent.put(run.taskId(), run));
+        }
+        return new Page<>(result.rows().stream().map(t -> new TaskSummary(t, recent.get(t.id()))).toList(),
+                result.total(), result.page(), result.size());
     }
 
     List<String> taskSourceIds(String id) {

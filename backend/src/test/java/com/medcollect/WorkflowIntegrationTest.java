@@ -109,6 +109,20 @@ class WorkflowIntegrationTest {
         var download = mvc.perform(get("/api/materials/{id}/original", material).with(user("reviewer").roles("REVIEWER")))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         assertThat(download).isEqualTo(pdf);
+        var preview = mvc.perform(get("/api/materials/{id}/original", material).param("preview", "true")
+                .with(user("reviewer").roles("REVIEWER"))).andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(preview.getHeader("X-Frame-Options")).isEqualTo("SAMEORIGIN");
+        assertThat(preview.getContentType()).isEqualTo("application/pdf");
+        assertThat(preview.getContentAsByteArray()).isEqualTo(pdf);
+        String pages = "/api/materials/" + material + "/pdf-preview";
+        assertThat(getBody(pages).path("pages").asInt()).isOne();
+        var page = mvc.perform(get(pages + "/1").with(user("reviewer").roles("REVIEWER")))
+                .andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(page.getContentType()).isEqualTo("image/jpeg");
+        var image = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(page.getContentAsByteArray()));
+        assertThat(image.getHeight()).isBetween(300,1680);
+        mvc.perform(get(pages + "/2").with(user("reviewer").roles("REVIEWER"))).andExpect(status().isBadRequest());
+        mvc.perform(get(pages + "/1")).andExpect(status().isUnauthorized());
 
         mvc.perform(post("/api/materials/{id}/drafts", material).contentType(MediaType.APPLICATION_JSON)
                 .content("{\"typeCode\":\"31\",\"knowledgeClass\":\"17\",\"useAi\":true}")
@@ -374,6 +388,13 @@ class WorkflowIntegrationTest {
         String id = task.path("id").asText();
         assertThat(task.path("nextRunAt").asLong()).isEqualTo(once);
         assertThat(getBody("/api/sources/" + source).path("tasks").path("total").asInt()).isEqualTo(1);
+        for (boolean enabled : List.of(false, true)) {
+            mvc.perform(put("/api/sources/" + source + "/state").contentType(MediaType.APPLICATION_JSON)
+                    .content(json.writeValueAsBytes(Map.of("enabled", enabled)))
+                    .with(user("collector").roles("ADMIN")).with(csrf())).andExpect(status().isOk());
+            assertThat(getBody("/api/sources/" + source).path("source").path("enabled").asBoolean()).isEqualTo(enabled);
+        }
+        assertThat(getBody("/api/sources/events").path("total").asInt()).isGreaterThanOrEqualTo(3);
         assertThat(getBody("/api/tasks?query=Multiple&mode=URL").path("total").asInt()).isEqualTo(1);
         JsonNode started = adminPost("/api/tasks/" + id + "/runs", null);
         JsonNode done = await("/api/runs/" + started.path("id").asText(), "run", "SUCCEEDED");
@@ -438,6 +459,69 @@ class WorkflowIntegrationTest {
                 .with(user("collector").roles("ADMIN")).with(csrf())));
         assertThat(getBody("/api/knowledge/" + draft.path("id").asText()).path("knowledge").path("schema")
                 .path("profileRevision").asInt()).isEqualTo(1);
+    }
+
+    @Test
+    void tracksScopedTasksOriginalsAndReviewAcrossTheWorkbench() throws Exception {
+        String root = adminPost("/api/classifications", Map.of("groupCode", "SUBJECT", "name", "Fixture specialty",
+                "enabled", true, "displayOrder", 18)).path("id").asText();
+        String child = adminPost("/api/classifications", Map.of("groupCode", "SUBJECT", "name", "Fixture disease",
+                "parentId", root, "enabled", true, "displayOrder", 10)).path("id").asText();
+        String task = adminPost("/api/tasks", Map.of("name", "Scoped upload", "mode", "UPLOAD",
+                "enabled", true, "captureMode", "SINGLE", "resultLimit", 1)).path("id").asText();
+        assertThat(getBody("/api/tasks?query=Scoped&state=WAITING").path("total").asInt()).isEqualTo(1);
+        String material = body(mvc.perform(multipart("/api/materials/upload")
+                .file(new MockMultipartFile("file", "scoped.txt", "text/plain", "Scoped checklist".getBytes(StandardCharsets.UTF_8)))
+                .param("taskId", task)
+                .with(user("collector").roles("ADMIN")).with(csrf()))).path("materialId").asText();
+        mvc.perform(put("/api/materials/classifications").contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("groupCode", "SUBJECT", "materialIds", List.of(material),
+                        "classIds", List.of(child)))).with(user("reviewer").roles("REVIEWER")).with(csrf())).andExpect(status().isOk());
+        for (String id : List.of(root, child)) {
+            assertThat(getBody("/api/dashboard?subjectId=" + id).path("unparsed").asInt()).isOne();
+            JsonNode result = getBody("/api/tasks?state=SUCCEEDED&subjectId=" + id).path("rows").get(0);
+            assertThat(result.path("id").asText()).isEqualTo(task);
+            assertThat(result.path("mode").asText()).isEqualTo("UPLOAD");
+            assertThat(result.path("latestRun").path("newCount").asInt()).isOne();
+            var rows = getBody("/api/materials?acquireMode=UPLOAD&parsed=false&subjectId=" + id).path("rows");
+            assertThat(rows).hasSize(1);
+            assertThat(rows.get(0).path("classIds").toString()).contains(root,child);
+        }
+        assertThat(getBody("/api/tasks?untilTime=1&subjectId=" + child).path("total").asInt()).isZero();
+        postBody("/api/materials/" + material + "/decision", Map.of("revision", 1, "approved", true));
+        String draftUrl = "/api/materials/" + material + "/drafts";
+        String requestId = java.util.UUID.randomUUID().toString();
+        var input = Map.of("typeCode", "1", "useAi", false, "requestId", requestId);
+        var draft = postBody(draftUrl, input);
+        assertThat(postBody(draftUrl, input).path("id").asText()).isEqualTo(draft.path("id").asText());
+        mvc.perform(post(draftUrl).with(user("reviewer").roles("REVIEWER")).with(csrf()).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("typeCode","6","useAi",false,"requestId",requestId))))
+                .andExpect(status().isConflict());
+        assertThat(getBody("/api/dashboard?subjectId=" + child).path("unparsed").asInt()).isZero();
+        assertThat(getBody("/api/materials?subjectId=" + root + "&parsed=true").path("rows").get(0).path("knowledgeCount").asInt()).isOne();
+        var review = getBody("/api/knowledge?human=DRAFT&sync=UNSYNCED&subjectId=" + root).path("rows");
+        assertThat(review).hasSize(1);
+        assertThat(review.get(0).path("id").asText()).isEqualTo(draft.path("id").asText());
+        assertThat(getBody("/api/knowledge?human=APPROVED&subjectId=" + root).path("total").asInt()).isZero();
+        postBody(draftUrl, Map.of("typeCode","6","useAi",false,"requestId",java.util.UUID.randomUUID().toString()));
+        assertThat(getBody("/api/materials?subjectId=" + child).path("rows").get(0).path("knowledgeCount").asInt()).isEqualTo(2);
+        assertThat(getBody("/api/knowledge?materialId=" + material).path("rows")).hasSize(2);
+        String peer = adminPost("/api/classifications", Map.of("groupCode","SUBJECT","name","Second fixture",
+                "parentId",root,"enabled",true,"displayOrder",20)).path("id").asText();
+        var shift = put("/api/classifications/" + peer + "/position").contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("peerId",child,"up",true,"revision",1)));
+        mvc.perform(shift.with(user("collector").roles("ADMIN")).with(csrf())).andExpect(status().isOk());
+        mvc.perform(shift.with(user("collector").roles("ADMIN")).with(csrf())).andExpect(status().isConflict());
+    }
+
+    @Test
+    void collectsFiftyDistinctCandidatesAcrossSearchPages() throws Exception {
+        var task = adminPost("/api/tasks", Map.of("name", "Paged search", "mode", "WEB", "queryText", "paged-fixture",
+                "enabled", true, "captureMode", "SINGLE", "resultLimit", 50, "selectResults", true));
+        String run = adminPost("/api/tasks/" + task.path("id").asText() + "/runs", null).path("id").asText();
+        await("/api/runs/" + run, "run", "SUCCEEDED");
+        assertThat(getBody("/api/runs/" + run).path("results")).hasSize(50);
+        assertThat(getBody("/api/tasks?query=Paged").path("rows").get(0).path("latestRun").path("candidateCount").asInt()).isEqualTo(50);
     }
 
     private JsonNode adminPost(String endpoint, Object payload) throws Exception {
@@ -517,9 +601,16 @@ class WorkflowIntegrationTest {
                     int code = 200;
                     Object response = switch (path) {
                         case "/api/login" -> ok(Map.of("access_token", "fixture-token", "expires_in", 600));
-                        case "/search" -> Map.of("results", List.of(
-                                Map.of("title", "A fixture", "url", base() + "/source-select-a"),
-                                Map.of("title", "B fixture", "url", base() + "/source-select-b")));
+                        case "/search" -> {
+                            String query = exchange.getRequestURI().getQuery();
+                            if (query.contains("paged-fixture")) {
+                                int page = Integer.parseInt(query.substring(query.lastIndexOf("pageno=") + 7));
+                                yield Map.of("results", java.util.stream.IntStream.range(0,20)
+                                        .mapToObj(i -> Map.of("title", "Page item " + i, "url", base() + "/source-" + (page * 19 + i))).toList());
+                            }
+                            yield Map.of("results", List.of(Map.of("title","A fixture","url",base() + "/source-select-a"),
+                                    Map.of("title","B fixture","url",base() + "/source-select-b")));
+                        }
                         case "/api/parameter/find-by-name" -> {
                             try (var in = WorkflowIntegrationTest.class.getResourceAsStream("/cdss/knowledge-templates.json")) {
                                 yield ok(Map.of("parameterValue", new String(in.readAllBytes(), StandardCharsets.UTF_8)));

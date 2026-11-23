@@ -98,21 +98,24 @@ class Acquisition {
         if (source != null) query += " site:" + httpUri(source.url()).getHost();
         String endpoint = baseUrl(settings.searxUrl());
         if (!endpoint.endsWith("/search")) endpoint += "/search";
-        JsonNode response = json.readTree(http.get(endpoint + "?format=json&q=" + encode(query)).bytes());
         var results = new LinkedHashMap<String, Candidate>();
-        for (JsonNode item : response.path("results")) {
-            try {
-                URI url = httpUri(item.path("url").asText());
-                if (source != null) {
-                    String host = httpUri(source.url()).getHost();
-                    if (!url.getHost().equalsIgnoreCase(host) && !url.getHost().toLowerCase(java.util.Locale.ROOT)
-                            .endsWith("." + host.toLowerCase(java.util.Locale.ROOT))) continue;
+        String search = endpoint + "?format=json&q=" + encode(query);
+        String allowedHost = source == null ? null : httpUri(source.url()).getHost().toLowerCase(java.util.Locale.ROOT);
+        for (int page = 1; page <= 10 && results.size() < task.resultLimit(); page++) {
+            JsonNode response = json.readTree(http.get(search + "&pageno=" + page).bytes());
+            int before = results.size();
+            for (JsonNode item : response.path("results")) {
+                try {
+                    URI url = httpUri(item.path("url").asText());
+                    String host = url.getHost().toLowerCase(java.util.Locale.ROOT);
+                    if (allowedHost != null && !host.equals(allowedHost) && !host.endsWith("." + allowedHost)) continue;
+                    results.putIfAbsent(url.toString(), new Candidate(item.path("title").asText(), url.toString(), null));
+                } catch (org.springframework.web.server.ResponseStatusException ignored) {
+                    continue;
                 }
-                results.putIfAbsent(url.toString(), new Candidate(item.path("title").asText(), url.toString(), null));
-            } catch (org.springframework.web.server.ResponseStatusException ignored) {
-                continue;
+                if (results.size() >= task.resultLimit()) break;
             }
-            if (results.size() >= task.resultLimit()) break;
+            if (results.size() == before || task.resultLimit() <= 20) break;
         }
         return new ArrayList<>(results.values());
     }

@@ -61,15 +61,21 @@ class CollectionController {
     }
 
     @GetMapping("/dashboard")
-    Dashboard dashboard() { return store.dashboard(); }
+    Dashboard dashboard(@RequestParam(required = false) String subjectId) { return store.dashboard(subjectId); }
 
     @GetMapping("/sources")
-    List<Source> sources() { return collection.sources(); }
+    List<CollectionService.SourceRow> sources() { return collection.sources(); }
 
     @GetMapping("/sources/{id}")
     Map<String, Object> source(@PathVariable String id) {
-        return Map.of("source", store.source(id), "tasks", collection.tasks(null, null, id, null, 1, 100),
+        return Map.of("source", store.source(id), "tasks", collection.tasks(null, null, id, null, null, null, null, null, 1, 100),
                 "events", store.events("SOURCE", id));
+    }
+
+    @GetMapping("/sources/events")
+    Page<Event> sourceEvents(@RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
+        return store.page("e.*", "FROM mc_event e WHERE e.entity_type = 'SOURCE'", "e.occurred_at DESC, e.id DESC",
+                Map.of(), page, size, Event.class);
     }
 
     @PostMapping("/sources")
@@ -82,12 +88,21 @@ class CollectionController {
         return collection.saveSource(id, input, actor.getName());
     }
 
+    record SourceState(@jakarta.validation.constraints.NotNull Boolean enabled) {}
+
+    @PutMapping("/sources/{id}/state")
+    void sourceState(@PathVariable String id, @Valid @RequestBody SourceState state, Principal actor) {
+        collection.enableSource(id, state.enabled(), actor.getName());
+    }
+
     @GetMapping("/tasks")
-    Page<Task> tasks(@RequestParam(defaultValue = "") @Size(max = 400) String query,
+    Page<TaskSummary> tasks(@RequestParam(defaultValue = "") @Size(max = 400) String query,
                      @RequestParam(required = false) Mode mode, @RequestParam(required = false) String sourceId,
-                     @RequestParam(required = false) Boolean enabled, @RequestParam(defaultValue = "1") int page,
+                     @RequestParam(required = false) Boolean enabled, @RequestParam(required = false) String state,
+                     @RequestParam(required = false) Long fromTime, @RequestParam(required = false) Long untilTime,
+                     @RequestParam(required = false) String subjectId, @RequestParam(defaultValue = "1") int page,
                      @RequestParam(defaultValue = "20") int size) {
-        return collection.tasks(query, mode, sourceId, enabled, page, size);
+        return collection.tasks(query, mode, sourceId, enabled, state, fromTime, untilTime, subjectId, page, size);
     }
 
     @GetMapping("/tasks/{id}")
@@ -131,20 +146,25 @@ class CollectionController {
     }
 
     @GetMapping("/materials")
-    Page<MaterialList> materials(@RequestParam(defaultValue = "") @Size(max = 400) String query,
+    Page<MaterialService.LibraryRow> materials(@RequestParam(defaultValue = "") @Size(max = 400) String query,
                                  @RequestParam(required = false) MaterialStatus status,
                                  @RequestParam(required = false) @Size(max = 12) String format,
                                  @RequestParam(required = false) @Size(max = 36) String classId,
                                  @RequestParam(defaultValue = "false") boolean originalsOnly,
+                                 @RequestParam(required = false) String subjectId, @RequestParam(required = false) String domainId,
+                                 @RequestParam(required = false) String materialTypeId, @RequestParam(required = false) Mode acquireMode,
+                                 @RequestParam(required = false) Boolean parsed, @RequestParam(required = false) Long fromTime,
+                                 @RequestParam(required = false) Long untilTime,
                                  @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
-        return materials.list(query, status, format, classId, originalsOnly, page, size);
+        return materials.list(query, status, format, classId, originalsOnly, subjectId, domainId, materialTypeId,
+                acquireMode, parsed, fromTime, untilTime, page, size);
     }
 
     @GetMapping("/materials/{id}")
     Map<String, Object> material(@PathVariable String id) {
         return Map.of("material", detail(store.material(id)), "runs", materials.runs(id),
                 "events", store.events("MATERIAL", id), "classificationIds", classifications.materialClasses(id),
-                "knowledge", knowledge.list(null, null, id, 1, 20));
+                "knowledge", knowledge.list(null, null, id, null, null, null, 1, 20));
     }
 
     @PostMapping(value = "/materials/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -164,6 +184,7 @@ class CollectionController {
                 .contentType(inline ? MediaType.APPLICATION_PDF : MediaType.APPLICATION_OCTET_STREAM)
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
                 .header("X-Content-Type-Options", "nosniff")
+                .header("X-Frame-Options", inline ? "SAMEORIGIN" : "DENY")
                 .body(store.bytes(material));
     }
 

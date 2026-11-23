@@ -28,6 +28,10 @@ class SecurityConfig {
     @Bean
     SecurityFilterChain security(HttpSecurity http, UserAccounts users) throws Exception {
         return http
+                .headers(headers -> headers.frameOptions(frame -> frame.disable()).addHeaderWriter((request, response) -> {
+                    // The original-file controller opts in to same-origin framing for inline PDFs.
+                    if (!response.containsHeader("X-Frame-Options")) response.setHeader("X-Frame-Options", "DENY");
+                }))
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/", "/index.html", "/assets/**", "/favicon.svg", "/api/csrf").permitAll()

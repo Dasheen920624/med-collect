@@ -31,9 +31,10 @@ class Classifications {
 
     private static final String NODE_QUERY = """
             SELECT c.*,
-                (SELECT COUNT(*) FROM mc_material_class a WHERE a.class_id = c.id) material_count,
-                (SELECT COUNT(*) FROM mc_knowledge k JOIN mc_material_class a ON a.material_id = k.material_id
-                  WHERE a.class_id = c.id) knowledge_count
+                (SELECT COUNT(DISTINCT a.material_id) FROM mc_material_class a JOIN mc_classification sub ON sub.id = a.class_id
+                  WHERE sub.id = c.id OR sub.parent_id = c.id) material_count,
+                (SELECT COUNT(DISTINCT k.id) FROM mc_knowledge k JOIN mc_material_class a ON a.material_id = k.material_id
+                  JOIN mc_classification sub ON sub.id = a.class_id WHERE sub.id = c.id OR sub.parent_id = c.id) knowledge_count
             FROM mc_classification c
             """;
     private final Store store;
@@ -47,6 +48,22 @@ class Classifications {
     List<String> materialClasses(String id) {
         return store.db().sql("SELECT class_id FROM mc_material_class WHERE material_id = :id ORDER BY class_id")
                 .param("id", id).query(String.class).list();
+    }
+
+    static String subjectScope(String materialColumn, String subjectId, java.util.Map<String, Object> params) {
+        if (trim(subjectId).isBlank()) return "";
+        String match = "SELECT 1 FROM mc_material_class a JOIN mc_classification c ON c.id = a.class_id"
+                + " WHERE a.material_id = " + materialColumn + " AND c.group_code = 'SUBJECT'";
+        if ("unassigned".equals(subjectId)) return " AND NOT EXISTS (" + match + ")";
+        params.put("subjectId", subjectId);
+        return " AND EXISTS (" + match + " AND (c.id = :subjectId OR c.parent_id = :subjectId))";
+    }
+
+    static String taskScope(String subjectId, java.util.Map<String, Object> params) {
+        if (trim(subjectId).isBlank()) return "";
+        return " AND EXISTS (SELECT 1 FROM mc_run sr JOIN mc_run_result rr ON rr.run_id = sr.id"
+                + " WHERE sr.task_id = t.id AND rr.material_id IS NOT NULL"
+                + subjectScope("rr.material_id", subjectId, params) + ")";
     }
 
     private Node node(String id) {
@@ -94,6 +111,31 @@ class Classifications {
         }
         store.event("CLASSIFICATION", key, current == null ? "CREATED" : "UPDATED", actor, name);
         return node(key);
+    }
+
+    record Move(@NotBlank String peerId, boolean up, int revision) {}
+
+    @Transactional
+    void move(String id, Move input, String actor) {
+        lock();
+        Node current = node(id);
+        var siblings = new java.util.ArrayList<>(nodes().stream().filter(n -> n.groupCode() == current.groupCode()
+                && Objects.equals(n.parentId(), current.parentId())).toList());
+        int index = java.util.stream.IntStream.range(0, siblings.size()).filter(i -> siblings.get(i).id().equals(id))
+                .findFirst().orElseThrow(() -> conflict("目录已变化，请刷新后重试"));
+        int next = index + (input.up() ? -1 : 1);
+        if (current.revision() != input.revision() || next < 0 || next >= siblings.size()
+                || !siblings.get(next).id().equals(input.peerId())) throw conflict("目录顺序已变化，请刷新后重试");
+        java.util.Collections.swap(siblings, index, next);
+        for (int i = 0; i < siblings.size(); i++) {
+            Node sibling = siblings.get(i);
+            int position = (i + 1) * 10;
+            if (sibling.displayOrder() == position) continue;
+            changed(store.db().sql("UPDATE mc_classification SET display_order = :position, revision = revision + 1"
+                    + " WHERE id = :id AND revision = :revision").param("position", position)
+                    .param("id", sibling.id()).param("revision", sibling.revision()).update());
+        }
+        store.event("CLASSIFICATION", id, "UPDATED", actor, input.up() ? "上移" : "下移");
     }
 
     @Transactional

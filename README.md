@@ -12,7 +12,7 @@ Java 21、Spring Boot 和 Vue 3 应用。支持指定网址、栏目、Europe PM
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 mvn -f backend/pom.xml clean verify
-& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.4.jar
+& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.5.jar
 ~~~
 
 打开 [本地采集工作台](http://127.0.0.1:8085/)。`local` 使用当前运行目录下 `.medcollect/db` 的 H2，原件保存到 `.medcollect/originals`。回环地址的本地体验账户为 `admin`，密码为 `medcollect-local`。运行 Vue 开发服务器可用 `pnpm --dir web dev`，其 `/api` 请求代理到 `127.0.0.1:8085`。更改代理地址时设置 `MEDCOLLECT_DEV_API`。
@@ -33,7 +33,7 @@ $env:MEDCOLLECT_CDSS_PASSWORD = Read-Host '业务账户密码' -MaskInput
 $env:MEDCOLLECT_MODEL_URL = Read-Host 'OpenAI 兼容网关地址'
 $env:MEDCOLLECT_MODEL_KEY = Read-Host '模型 API 密钥' -MaskInput
 $env:MEDCOLLECT_CDSS_CERT_SHA256 = Read-Host '业务系统叶证书 SHA-256 指纹，可留空使用信任链'
-& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.4.jar --spring.profiles.active=oracle
+& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.5.jar --spring.profiles.active=oracle
 ~~~
 
 业务 HTTPS 使用 JVM 信任链，也支持用现场核验的指纹固定叶证书。在系统设置测试业务连接并刷新模板后，可设置 `MEDCOLLECT_CDSS_SYNC_ENABLED=true` 并重启采集服务。
@@ -59,10 +59,10 @@ $env:MEDCOLLECT_CDSS_CERT_SHA256 = Read-Host '业务系统叶证书 SHA-256 指�
 
 ## 操作流程
 
-1. 在**知识采集管理**配置指定网址、栏目、文献检索、全网检索或手工上传。任务可关联多个来源，选择手动、按间隔、单次定时或每日定时。启用全网检索候选选采时，从搜索执行详情选择结果并启动采集。智能规划生成可编辑的采集建议。
-2. 在**文献原文管理**按来源和分类筛选，查看原件、摘要和采集轨迹，核验原文并分配分类。各类型原件保存为服务器文件。PDF 模型分析时从原件临时提取文字，其他类型的提取文本随原件保存。对扫描件或锁定 PDF，可由审核人核验原件并补录摘要。Europe PMC 记录没有可取得的开放获取 PDF 时，保留源记录、摘要和链接。
-3. 在**静态知识解析**选择已通过原文审核的资料，按 4.23 知识类型和子类手工建稿或模型解析。核对摘要、模板字段和业务字典 ID，再提交人工审核。管理员可在**知识生成模板**维护新稿件使用的提取说明和必填规则。
-4. 在**知识审核管理**打开待审稿，点击「检查重复与差异」。多个业务候选需要选择目标后核对差异。人工审核通过后执行新增、按原业务 ID 更新或登记跳过。PDF 摘要写入正文，变更的原件作为附件绑定。
+1. 从**知识采集管理**页首选择「指定网址下载」「手工上传」或「全网搜索」。网址支持直接输入或使用已配置来源，并可选择栏目采集。任务可关联多个来源，选择手动、按间隔、单次定时或每日定时。启用全网检索候选选采时，从搜索执行详情选择结果并启动采集。智能规划生成可编辑的采集建议。
+2. 在**文献原文管理**选择左侧学科病种目录，按分类、格式或获取方式查询。可从列表预览、下载原件，核验摘要和采集记录，并给一份或多份原文分配分类。各类型原件保存为服务器文件。PDF 模型分析时从原件临时提取文字，其他类型的提取文本随原件保存。对扫描件或锁定 PDF，可由审核人核验原件并补录摘要。Europe PMC 记录没有可取得的开放获取 PDF 时，保留源记录、摘要和链接。
+3. 在**静态知识解析**查看每份原文的解析状态、已生成知识数和最近生成时间。核验原文后，可按一个或多个 4.23 模板手工建稿或调用模型。核对摘要、模板字段和业务字典 ID，再提交人工审核。管理员可在**知识生成模板**维护新稿件使用的提取说明和必填规则。
+4. 在**知识审核管理**打开稿件，左侧逐页查看 PDF 原件或阅读其他资料的提取文本，右侧核对类别、摘要和字段。打开待审稿后点击「检查重复与差异」。多个业务候选需要选择目标后核对差异。人工审核通过后执行新增、按原业务 ID 更新或登记跳过。PDF 摘要写入正文，变更的原件作为附件绑定。
 5. 已同步稿可「发起新版本」并重新提交审核。在「版本记录」按业务 ID 查看历次同步的差异和更新前后快照。同步中断时从详情重试，系统先回读业务记录及附件。查重后业务原记录有变化时，按最新差异重新审核。[同步操作与异常处理](docs/deployment.md#知识同步查重与版本记录)
 
-采集支持 PDF、HTML、DOCX、TXT、CSV、XLS、XLSX，单份原件上限 20 MB，任务单次最多 20 项。Oracle 保存相对文件路径、来源与摘要、执行记录、知识修订状态、操作记录及同步回执。部署备份须包含 Oracle 和原件目录。[交接记录](docs/handoff.md)
+采集支持 PDF、HTML、DOCX、TXT、CSV、XLS、XLSX，单份原件上限 20 MB，每批可上传 1 至 20 份。采集任务可指定 1 至 100 条结果，一个任务最多配置 20 个来源或网址。Oracle 保存相对文件路径、来源与摘要、执行记录、知识修订状态、操作记录及同步回执。部署备份须包含 Oracle 和原件目录。[交接记录](docs/handoff.md)

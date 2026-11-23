@@ -30,6 +30,16 @@ class CollectionConfigurationController {
         return classifications.save(id, input, actor.getName());
     }
 
+    @PutMapping("/classifications/{id}/position")
+    void move(@PathVariable String id, @Valid @RequestBody Classifications.Move input, Principal actor) {
+        classifications.move(id, input, actor.getName());
+    }
+
+    @GetMapping("/template-profiles/{code}/events")
+    List<Records.Event> templateEvents(@PathVariable String code, @RequestParam(required = false) String knowledgeClass) {
+        return templates.events(code, knowledgeClass);
+    }
+
     @PutMapping("/materials/classifications")
     void assign(@Valid @RequestBody Classifications.Assignment input, Principal actor) {
         classifications.assign(input, actor.getName());

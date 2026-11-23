@@ -44,7 +44,8 @@ class KnowledgeWorkflow {
         this.transactions = transactions;
     }
 
-    Page<KnowledgeList> list(String query, KnowledgeStatus status, String materialId, int page, int size) {
+    Page<KnowledgeList> list(String query, KnowledgeStatus status, String materialId, String human, String sync,
+                             String subjectId, int page, int size) {
         Map<String, Object> filters = new HashMap<>();
         String from = "FROM mc_knowledge k JOIN mc_material m ON m.id = k.material_id WHERE 1=1";
         if (!trim(query).isBlank()) {
@@ -59,7 +60,26 @@ class KnowledgeWorkflow {
             from += " AND k.material_id = :material";
             filters.put("material", materialId);
         }
-        return store.page("k.id, k.material_id, m.title material_title, k.title, k.type_code, k.status, k.updated_at, k.remote_id",
+        from += Classifications.subjectScope("k.material_id", subjectId, filters);
+        if (!trim(human).isBlank()) {
+            from += " AND (CASE WHEN k.status IN ('DRAFT','PENDING','RETURNED') THEN k.status ELSE 'APPROVED' END) = :human";
+            filters.put("human", human);
+        }
+        if (!trim(sync).isBlank()) {
+            from += " AND (CASE WHEN k.sync_phase = 'SKIPPED' THEN 'SKIPPED' WHEN k.status IN"
+                    + " ('SYNCING','SYNCED','SYNC_FAILED') THEN k.status ELSE 'UNSYNCED' END) = :sync";
+            filters.put("sync", sync);
+        }
+        String columns = """
+                k.id, k.material_id, m.title material_title, k.title, k.type_code, k.status, k.updated_at, k.remote_id, k.sync_phase,
+                (SELECT e.actor FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
+                  AND e.action IN ('APPROVED','RETURNED') ORDER BY e.occurred_at DESC, e.id DESC FETCH FIRST 1 ROW ONLY) reviewer,
+                (SELECT MAX(e.occurred_at) FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
+                  AND e.action IN ('APPROVED','RETURNED')) reviewed_at,
+                (SELECT MAX(e.occurred_at) FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
+                  AND e.action = 'AI_REVIEW') ai_reviewed_at
+                """;
+        return store.page(columns,
                 from, "k.updated_at DESC, k.id", filters, page, size, KnowledgeList.class);
     }
 
@@ -67,6 +87,11 @@ class KnowledgeWorkflow {
         Material material = store.material(materialId);
         if (material.status() != MaterialStatus.APPROVED) throw conflict("请先完成原文审核");
         var schema = templates.schema(request.typeCode(), request.knowledgeClass());
+        String id = request.requestId() == null ? id() : request.requestId().toString();
+        if (request.requestId() != null) {
+            Detail existing = existingDraft(id, materialId, schema, request.useAi());
+            if (existing != null) return existing;
+        }
         String title = limit(material.title(), 100);
         String summary = material.sourceAbstract();
         String modelName = null;
@@ -82,7 +107,6 @@ class KnowledgeWorkflow {
             modelName = result.model();
             fields = result.fields();
         }
-        String id = id();
         long now = store.now();
         var params = new MapSqlParameterSource().addValue("id", id).addValue("material", materialId)
                 .addValue("title", title).addValue("type", schema.category().code())
@@ -91,16 +115,35 @@ class KnowledgeWorkflow {
                 .addValue("relations", "15_11".equals(request.typeCode()) ? "{\"nurseIds\":[\"11\"]}" : "{}", Types.CLOB)
                 .addValue("model", modelName, Types.VARCHAR).addValue("now", now);
         String usedModel = modelName;
-        return transactions.execute(tx -> {
-            store.db().sql("""
+        try {
+            return transactions.execute(tx -> {
+                store.db().sql("""
                     INSERT INTO mc_knowledge (id, material_id, title, type_code, knowledge_class, summary, template_json,
                       fields_json, relations_json, status, revision, model_name, created_at, updated_at)
                     VALUES (:id, :material, :title, :type, :class, :summary, :schema,
                       :fields, :relations, 'DRAFT', 1, :model, :now, :now)
                     """).paramSource(params).update();
-            store.event("KNOWLEDGE", id, usedModel == null ? "CREATED" : "PARSED", actor, usedModel);
-            return detail(id);
-        });
+                store.event("KNOWLEDGE", id, usedModel == null ? "CREATED" : "PARSED", actor, usedModel);
+                return detail(id);
+            });
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            Detail existing = existingDraft(id, materialId, schema, request.useAi());
+            if (existing != null) return existing;
+            throw e;
+        }
+    }
+
+    private Detail existingDraft(String id, String materialId, KnowledgeTemplates.Schema schema, boolean useAi) {
+        var existing = store.db().sql("SELECT * FROM mc_knowledge WHERE id = :id").param("id", id)
+                .query(Knowledge.class).optional();
+        if (existing.isEmpty()) return null;
+        Knowledge k = existing.get();
+        boolean generatedByModel = !trim(k.modelName()).isBlank();
+        if (!k.materialId().equals(materialId) || !k.typeCode().equals(schema.category().code())
+                || !trim(k.knowledgeClass()).equals(trim(schema.knowledgeClass())) || useAi != generatedByModel) {
+            throw conflict("同一解析请求已用于其他原文或模板");
+        }
+        return detail(id);
     }
 
     Detail detail(String id) {

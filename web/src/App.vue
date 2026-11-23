@@ -1,8 +1,7 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  Activity, BookOpenCheck, ClipboardCheck, Cross, Database, FileArchive, GitPullRequest,
-  LayoutDashboard, LogOut, Menu, Settings, Users, X, ListTree, Sparkles, FileText,
+  Activity, BookOpenCheck, Cross, ChevronDown, CloudDownload, CircleUserRound, LogOut, Menu, Settings, X,
 } from '@lucide/vue'
 import { api, login, logout, send } from './api'
 import Dashboard from './views/Dashboard.vue'
@@ -16,16 +15,16 @@ import ClassificationsView from './views/Classifications.vue'
 import TemplatesView from './views/Templates.vue'
 
 const views = [
-  { id: 'overview', name: '知识采集概览', icon: LayoutDashboard, component: Dashboard },
-  { id: 'tasks', name: '知识采集管理', icon: GitPullRequest, component: Tasks },
-  { id: 'materials', name: '文献原文管理', icon: FileArchive, component: Materials },
-  { id: 'production', name: '静态知识解析', icon: Sparkles, component: Materials },
-  { id: 'knowledge', name: '知识审核管理', icon: ClipboardCheck, component: Knowledge },
-  { id: 'sources', name: '知识来源配置', icon: Database, component: Sources },
-  { id: 'classifications', name: '知识分类配置', icon: ListTree, component: ClassificationsView },
-  { id: 'templates', name: '知识生成模板', icon: FileText, component: TemplatesView },
-  { id: 'settings', name: '系统设置', icon: Settings, component: SettingsView, admin: true },
-  { id: 'users', name: '用户管理', icon: Users, component: UsersView, admin: true },
+  { id: 'overview', name: '知识采集概览', component: Dashboard },
+  { id: 'tasks', name: '知识采集管理', component: Tasks },
+  { id: 'materials', name: '文献原文管理', component: Materials },
+  { id: 'production', name: '静态知识解析', component: Materials },
+  { id: 'knowledge', name: '知识审核管理', component: Knowledge },
+  { id: 'sources', name: '知识来源配置', component: Sources },
+  { id: 'classifications', name: '知识分类配置', component: ClassificationsView },
+  { id: 'templates', name: '知识生成模板', component: TemplatesView },
+  { id: 'settings', name: '系统设置', component: SettingsView, admin: true },
+  { id: 'users', name: '用户管理', component: UsersView, admin: true },
 ]
 const session = ref()
 const loading = ref(true)
@@ -38,16 +37,45 @@ const mobileMenu = ref(false)
 const route = ref({ view: 'overview', detail: '' })
 const toast = ref('')
 let toastTimer
+const collectionOpen = ref(true)
+const settingsOpen = ref(false)
+const directory = ref([])
+const specialty = ref('')
+const disease = ref('')
+const scope = computed(() => disease.value || specialty.value)
+const subjects = computed(() => directory.value.filter(node => node.groupCode === 'SUBJECT'))
+const hasClinicalScope = computed(() => ['overview','tasks','materials','production','knowledge'].includes(route.value.view))
+const reread = ref(0)
+async function loadDirectory() {
+  if (!session.value) return
+  try {
+    directory.value = await api('/classifications')
+    if (scope.value && scope.value !== 'unassigned' && !subjects.value.some(n => n.id === scope.value)) selectScope('')
+  } catch (e) { announce(e.message) }
+}
+function selectScope(id) {
+  const node = subjects.value.find(n => n.id === id)
+  specialty.value = node?.parentId || id || ''
+  disease.value = node?.parentId ? id : ''
+}
+watch(session, (value) => {
+  if (value) loadDirectory()
+  else { directory.value = []; selectScope('') }
+})
 const selected = computed(() => views.find(item => item.id === route.value.view) || views[0])
 
 function readRoute() {
   const [view = 'overview', detail = ''] = window.location.hash.slice(1).split('/')
   route.value = { view: views.some(item => item.id === view) ? view : 'overview', detail }
+  if (selected.value.admin) settingsOpen.value = true
+  else collectionOpen.value = true
   if (selected.value.admin && session.value && !session.value.admin) go('overview')
 }
 
 function go(view, detail = '') {
-  window.location.hash = view + (detail ? '/' + detail : '')
+  const hash = view + (detail ? '/' + detail : '')
+  if (window.location.hash.slice(1) === hash) reread.value++
+  else window.location.hash = hash
   mobileMenu.value = false
 }
 
@@ -161,32 +189,50 @@ onUnmounted(() => {
   <div v-else class="shell">
     <aside class="sidebar" :class="{ 'is-open': mobileMenu }">
       <div class="brand">
-        <div class="brand-symbol"><Cross :size="20" /></div>
-        <div><strong>医疗文献采集</strong><span>MEDCOLLECT</span></div>
+        <div class="brand-symbol"><BookOpenCheck :size="20" /></div>
+        <div><strong>医疗文献采集</strong><span>专科 · 专病 · 知识管理</span></div>
       </div>
-      <div class="side-section">工作台</div>
+      <div class="side-section">知识中心</div>
       <nav aria-label="主导航">
-        <button v-for="item in views.filter(item => !item.admin || session.admin)" :key="item.id"
-          :class="{ active: selected.id === item.id }" :aria-current="selected.id === item.id ? 'page' : undefined"
-          @click="go(item.id)">
-          <component :is="item.icon" :size="19" :stroke-width="1.8" /><span>{{ item.name }}</span>
+        <button class="nav-group" :aria-expanded="collectionOpen" @click="collectionOpen = !collectionOpen">
+          <CloudDownload :size="19" /> 知识自动采集 <ChevronDown :size="15" :class="{ folded: !collectionOpen }" />
         </button>
+        <div v-show="collectionOpen" class="nav-children">
+          <button v-for="item in views.filter(v => !v.admin)" :key="item.id" :class="{ active: selected.id === item.id }"
+            :aria-current="selected.id === item.id ? 'page' : undefined" @click="go(item.id)">{{ item.name }}</button>
+        </div>
+        <template v-if="session.admin">
+          <button class="nav-group admin-group" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">
+            <Settings :size="18" /> 系统管理 <ChevronDown :size="15" :class="{ folded: !settingsOpen }" />
+          </button>
+          <div v-show="settingsOpen" class="nav-children">
+            <button v-for="item in views.filter(v => v.admin)" :key="item.id" :class="{ active: selected.id === item.id }"
+              :aria-current="selected.id === item.id ? 'page' : undefined" @click="go(item.id)">{{ item.name }}</button>
+          </div>
+        </template>
       </nav>
-      <div class="sidebar-bottom">
-        <div class="side-avatar"><span>{{ Array.from(session.username)[0].toUpperCase() }}</span></div>
-        <div class="side-user"><strong>{{ session.username }}</strong><small>{{ session.admin ? '系统管理员' : '知识审核员' }}</small></div>
-        <button class="icon-button" aria-label="退出登录" title="退出登录" @click="signOut"><LogOut :size="17" /></button>
-      </div>
     </aside>
     <button v-if="mobileMenu" class="mobile-backdrop" aria-label="关闭菜单" @click="mobileMenu = false"></button>
     <div class="workspace">
       <header class="topbar">
         <button class="icon-button mobile-toggle" aria-label="打开菜单" @click="mobileMenu = !mobileMenu"><Menu :size="22" /></button>
-        <span class="breadcrumb">知识自动采集 <span>/</span> <strong>{{ selected.name }}</strong></span>
+        <button class="link home-crumb" @click="go('overview')">医疗文献采集</button><span class="crumb-slash">/</span>
+        <template v-if="hasClinicalScope">
+          <label class="context-field">专科<select aria-label="全局专科切换" :value="specialty" @change="selectScope($event.target.value)">
+            <option value="">全部专科</option><option v-for="n in subjects.filter(n => !n.parentId)" :key="n.id" :value="n.id">{{ n.name }}</option>
+            <option value="unassigned">未关联学科</option></select></label>
+          <span class="crumb-slash">/</span>
+          <label class="context-field">病种<select aria-label="全局病种切换" v-model="disease" :disabled="!subjects.some(n => n.parentId === specialty)">
+            <option value="">全部病种</option><option v-for="n in subjects.filter(n => n.parentId === specialty)" :key="n.id" :value="n.id">{{ n.name }}</option></select></label>
+        </template>
+        <span v-else class="breadcrumb">{{ selected.name }}</span>
+        <div class="top-account"><CircleUserRound :size="20" /><span>{{ session.username }}</span>
+          <button class="icon-button" aria-label="退出登录" title="退出登录" @click="signOut"><LogOut :size="16" /></button></div>
       </header>
       <main class="main">
-        <component :is="selected.component" :key="selected.id" :session="session" :detail="route.detail"
-          :parse-only="selected.id === 'production'"
+        <component :is="selected.component" :key="selected.id + reread" :session="session" :detail="route.detail"
+          :parse-only="selected.id === 'production'" :directory="directory" :subject-id="scope"
+          @scope="selectScope" @directory-changed="loadDirectory"
           @navigate="go" @notice="announce" />
       </main>
     </div>

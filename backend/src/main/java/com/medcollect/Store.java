@@ -148,13 +148,19 @@ class Store {
         return new Page<>(rows, total, current, limit);
     }
 
-    Dashboard dashboard() {
-        return new Dashboard(count("mc_task"), count("mc_material WHERE format_code <> 'METADATA'"),
-                count("mc_material WHERE status = 'PENDING'"), count("mc_knowledge WHERE status = 'PENDING'"),
-                count("mc_knowledge WHERE status = 'SYNCED'"), count("mc_material WHERE format_code = 'METADATA'"));
+    Dashboard dashboard(String subjectId) {
+        var params = new java.util.HashMap<String, Object>();
+        String materials = "mc_material m WHERE 1=1" + Classifications.subjectScope("m.id", subjectId, params);
+        String knowledge = "mc_knowledge k WHERE 1=1" + Classifications.subjectScope("k.material_id", subjectId, params);
+        String tasks = "mc_task t WHERE 1=1" + Classifications.taskScope(subjectId, params);
+        return new Dashboard(count(tasks, params), count(materials + " AND format_code <> 'METADATA'", params),
+                count(materials + " AND status = 'PENDING'", params), count(knowledge + " AND status = 'PENDING'", params),
+                count(knowledge + " AND status = 'SYNCED'", params), count(materials + " AND format_code = 'METADATA'", params),
+                count(materials + " AND format_code <> 'METADATA' AND NOT EXISTS"
+                        + " (SELECT 1 FROM mc_knowledge k WHERE k.material_id = m.id)", params));
     }
 
-    private long count(String from) {
-        return db.sql("SELECT COUNT(*) FROM " + from).query(Long.class).single();
+    private long count(String from, Map<String, Object> params) {
+        return db.sql("SELECT COUNT(*) FROM " + from).params(params).query(Long.class).single();
     }
 }

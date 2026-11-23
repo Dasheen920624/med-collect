@@ -1,8 +1,9 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Plus } from '@lucide/vue'
-import { api, send } from '../api'
-import { date } from '../labels'
+import { api, list, send } from '../api'
+import Events from '../components/Events.vue'
+import Pagination from '../components/Pagination.vue'
 import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StateBadge from '../components/StateBadge.vue'
@@ -16,6 +17,19 @@ const issue = ref('')
 const formIssue = ref('')
 const busy = ref(false)
 const usage = ref(null)
+const logs = ref(null)
+const size = ref(10)
+const page = ref(1)
+const visible = computed(() => sources.value.slice((page.value-1)*size.value,page.value*size.value))
+async function history(p = 1) {
+  try { logs.value = await list('/sources/events',{page:p,size:20}) } catch (e) { issue.value = e.message }
+}
+async function toggle(source) {
+  busy.value = true
+  try { await send('/sources/'+source.id+'/state',{enabled:!source.enabled},'PUT'); await load() }
+  catch (e) { issue.value = e.message }
+  finally { busy.value = false }
+}
 
 async function load() {
   try {
@@ -54,27 +68,23 @@ onMounted(load)
 
 <template>
   <section class="page-head">
-    <div><h1>知识来源配置</h1><p>维护任务引用的来源、授权状态和使用记录。</p></div>
-    <button v-if="session.admin" class="button primary" @click="edit()"><Plus :size="18" /> 新建来源</button>
+    <h1>知识来源配置</h1>
+    <div class="actions"><button v-if="session.admin" class="button primary" @click="edit()"><Plus :size="16" />新增来源</button>
+      <button class="button secondary" @click="history()">操作日志</button></div>
   </section>
   <p v-if="issue" class="message error" role="alert">{{ issue }}</p>
-  <section class="panel">
-    <div class="panel-head"><h2>来源列表</h2><span class="muted">{{ sources.length }} 个来源</span></div>
-    <div v-if="sources.length" class="table-wrap">
-      <table><thead><tr><th>来源名称</th><th>资料地址</th><th>授权状态</th><th>状态</th><th>登记时间</th><th>操作</th></tr></thead>
-        <tbody><tr v-for="item in sources" :key="item.id">
-          <td><strong>{{ item.name }}</strong><small v-if="item.note" class="subline">{{ item.note }}</small></td>
-          <td><a class="table-url" :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.url }}</a></td>
-          <td>{{ accessLabels[item.accessState] }}</td>
-          <td><StateBadge :state="item.enabled ? 'ACTIVE' : 'OFF'" :labels="{ ACTIVE: '已启用', OFF: '已停用' }" /></td>
-          <td>{{ date(item.createdAt) }}</td>
-          <td class="table-actions"><button class="link" @click="showUsage(item)">使用情况</button>
-            <button v-if="session.admin" class="link" @click="edit(item)">编辑</button></td>
-        </tr></tbody>
-      </table>
-    </div>
+  <section class="panel"><div v-if="sources.length" class="table-wrap">
+    <table><thead><tr><th>序号</th><th>来源名称</th><th>采集地址</th><th>授权状态</th><th>状态</th><th>备注</th><th>使用情况</th><th>操作</th></tr></thead>
+      <tbody><tr v-for="(item,i) in visible" :key="item.id">
+        <td>{{ (page-1)*size+i+1 }}</td><td>{{ item.name }}</td><td><a class="table-url" :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.url }}</a></td>
+        <td>{{ accessLabels[item.accessState] }}</td><td><StateBadge :state="item.enabled ? 'ACTIVE' : 'OFF'" :labels="{ ACTIVE: '启用', OFF: '停用' }" /></td>
+        <td>{{ item.note || '—' }}</td><td><button class="link" @click="showUsage(item)">{{ item.taskCount }} 个任务</button></td>
+        <td><div v-if="session.admin" class="table-actions"><button class="link" @click="edit(item)">编辑</button><button class="link" :disabled="busy" @click="toggle(item)">{{ item.enabled ? '停用' : '启用' }}</button></div></td>
+      </tr></tbody></table></div>
     <EmptyState v-else title="暂无资料来源" detail="添加常用站点后，可在新建采集任务时直接引用。" />
+    <Pagination :page="page" :size="size" :total="sources.length" resizable @change="page=$event" @resize="size=$event;page=1" />
   </section>
+  <Drawer v-if="logs" title="来源操作日志" @close="logs=null"><Events :events="logs.rows" /><Pagination v-bind="logs" @change="history" /></Drawer>
   <Drawer v-if="form" :title="form.id ? '编辑资料来源' : '新建资料来源'" :busy="busy" @close="form = null">
     <form id="source-form" class="form-grid" @submit.prevent="save">
       <label>来源名称<input v-model.trim="form.name" maxlength="120" required placeholder="例如 学术期刊官网" /></label>
@@ -94,6 +104,7 @@ onMounted(load)
     <ul v-else class="simple-list"><li v-for="task in usage.tasks.rows" :key="task.id">
       <button class="link" @click="emit('navigate', 'tasks', task.id)">{{ task.name }}</button>
     </li></ul>
+    <Events :events="usage.events" />
     <template #footer>
       <button class="button secondary" @click="emit('navigate', 'tasks', 'source:' + usage.source.id)">查询使用此来源的任务</button>
     </template>

@@ -90,34 +90,64 @@ class MaterialService {
                 .addValue("source", sourceId, Types.VARCHAR)).update();
     }
 
-    Page<MaterialList> list(String query, MaterialStatus status, String format, String classId,
-                            boolean originalsOnly, int page, int size) {
+    record LibraryItem(String id, String title, String formatCode, String fileName, String sourceUrl, String sourceName,
+                       long capturedAt, MaterialStatus status, String acquireMode, int knowledgeCount, Long lastParsedAt) {}
+    record LibraryRow(@com.fasterxml.jackson.annotation.JsonUnwrapped LibraryItem material, List<String> classIds) {}
+    private record Assignment(String materialId, String classId) {}
+
+    Page<LibraryRow> list(String query, MaterialStatus status, String format, String classId, boolean originalsOnly,
+                          String subjectId, String domainId, String materialTypeId, Mode acquireMode, Boolean parsed,
+                          Long fromTime, Long untilTime, int page, int size) {
         var filters = new HashMap<String, Object>();
-        String from = "FROM mc_material WHERE 1=1";
+        String from = """
+                FROM (SELECT m.id, m.title, m.format_code, m.file_name, m.source_url, m.source_name, m.captured_at,
+                    m.status, m.authors, m.publisher, m.external_ref,
+                    COALESCE((SELECT t.collection_mode FROM mc_run_result p JOIN mc_run r ON r.id = p.run_id
+                      JOIN mc_task t ON t.id = r.task_id WHERE p.material_id = m.id AND p.status IN ('CAPTURED','METADATA')
+                      ORDER BY r.started_at, r.id FETCH FIRST 1 ROW ONLY),
+                      CASE WHEN m.source_name = '手工上传' THEN 'UPLOAD' END) acquire_mode,
+                    (SELECT COUNT(*) FROM mc_knowledge k WHERE k.material_id = m.id) knowledge_count,
+                    (SELECT MAX(k.created_at) FROM mc_knowledge k WHERE k.material_id = m.id) last_parsed_at
+                  FROM mc_material m) m WHERE 1=1
+                """;
         if (!trim(query).isBlank()) {
             from += " AND (INSTR(LOWER(title), :query) > 0 OR INSTR(LOWER(source_name), :query) > 0"
                     + " OR INSTR(LOWER(authors), :query) > 0 OR INSTR(LOWER(publisher), :query) > 0"
                     + " OR INSTR(LOWER(external_ref), :query) > 0)";
             filters.put("query", query.strip().toLowerCase(Locale.ROOT));
         }
-        if (status != null) {
-            from += " AND status = :status";
-            filters.put("status", status.name());
-        }
-        if (!trim(format).isBlank()) {
-            from += " AND format_code = :format";
-            filters.put("format", format);
-        }
+        if (status != null) { from += " AND status = :status"; filters.put("status", status.name()); }
+        if (!trim(format).isBlank()) { from += " AND format_code = :format"; filters.put("format", format); }
+        if (acquireMode != null) { from += " AND acquire_mode = :mode"; filters.put("mode", acquireMode.name()); }
+        if (fromTime != null) { from += " AND captured_at >= :fromTime"; filters.put("fromTime", fromTime); }
+        if (untilTime != null) { from += " AND captured_at < :untilTime"; filters.put("untilTime", untilTime); }
+        if (parsed != null) from += parsed ? " AND knowledge_count > 0" : " AND knowledge_count = 0";
         if (originalsOnly) from += " AND format_code <> 'METADATA'";
+        from += Classifications.subjectScope("m.id", subjectId, filters);
         if ("unclassified".equals(classId)) {
-            from += " AND NOT EXISTS (SELECT 1 FROM mc_material_class a WHERE a.material_id = mc_material.id)";
-        } else if (!trim(classId).isBlank()) {
-            from += " AND EXISTS (SELECT 1 FROM mc_material_class a JOIN mc_classification c ON c.id = a.class_id"
-                    + " WHERE a.material_id = mc_material.id AND (a.class_id = :class OR c.parent_id = :class))";
-            filters.put("class", classId);
+            from += " AND NOT EXISTS (SELECT 1 FROM mc_material_class a WHERE a.material_id = m.id)";
+        } else {
+            from += classFilter("classId", classId, filters);
         }
-        return store.page("id, title, format_code, file_name, source_url, source_name, captured_at, status",
-                from, "captured_at DESC, id", filters, page, size, MaterialList.class);
+        from += classFilter("domainId", domainId, filters) + classFilter("materialTypeId", materialTypeId, filters);
+        var result = store.page("m.*", from, "m.captured_at DESC, m.id", filters, page, size, LibraryItem.class);
+        var assigned = new HashMap<String, List<String>>();
+        if (!result.rows().isEmpty()) {
+            var ids = result.rows().stream().map(LibraryItem::id).toList();
+            for (var relation : store.db().sql("SELECT material_id, class_id FROM mc_material_class WHERE material_id IN (:ids)"
+                    + " ORDER BY class_id").param("ids", ids).query(Assignment.class).list()) {
+                assigned.computeIfAbsent(relation.materialId(), key -> new java.util.ArrayList<>()).add(relation.classId());
+            }
+        }
+        return new Page<>(result.rows().stream().map(m -> new LibraryRow(m, assigned.getOrDefault(m.id(), List.of()))).toList(),
+                result.total(), result.page(), result.size());
+    }
+
+    private String classFilter(String key, String id, Map<String, Object> params) {
+        if (trim(id).isBlank()) return "";
+        params.put(key, id);
+        return " AND EXISTS (SELECT 1 FROM mc_material_class a JOIN mc_classification c ON c.id = a.class_id"
+                + " WHERE a.material_id = m.id AND (c.id = :" + key + " OR c.parent_id = :" + key + "))";
     }
 
     @Transactional

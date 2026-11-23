@@ -136,7 +136,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.4'
+$version = '0.1.5'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)
@@ -208,6 +208,14 @@ JAR 应包含 `BOOT-INF/classes/static/index.html` 和 Vue assets。应用镜像
 ~~~
 
 基础镜像取自 Eclipse Temurin 官方 Docker 仓库的 Linux amd64 清单。服务器直拉超时后，从构建机下载并核对清单、镜像配置和各层的 SHA-256，经 SSH 传至服务器。现网沿用 CentOS 7 上已验证的本地 Docker 构建方式。基础镜像更新时按摘要核验新镜像和 Java 版本，并在切换前用新镜像执行应用验收。[Temurin 容器镜像](https://adoptium.net/installation/containers/) · [Compose 启动与健康等待](https://docs.docker.com/reference/cli/docker/compose/up/)
+
+## 0.1.5 工作台验收与回滚
+
+此版本使用现有 Oracle 表、原件卷和 4.23 接口。部署前分别构建 Vue 和 Spring Boot，核对 Vite 输出的资源标识已进入 JAR。使用生产 Oracle 预演时关闭调度及业务同步，使读取的原件目录与该 schema 对应。
+
+发布后登录概览，依次检查任务、原文、解析、审核四张流程卡，并打开最近任务。切换专科后核对同一条件下的概览计数和列表总数。用已有 PDF 稿件验证「对照查看」，切换第 1 页和第 2 页，核对 `/api/materials/{id}/pdf-preview/{page}` 返回 `image/jpeg`。点击「打开 PDF」，核对原件预览响应的 `Content-Type: application/pdf`、`X-Frame-Options: SAMEORIGIN` 及原文件 SHA-256。用已同步稿件复验时只需查看，无需发起新版本或业务写入。
+
+0.1.5 可按本文回滚命令切回 0.1.4。若已经创建结果上限超过 20 条的任务，0.1.4 的编辑表单只能保存至 20 条。首次上线时以服务器 `release.env`、`previous.env` 和该发行的 `SHA256SUMS` 定位可回退镜像。
 
 ## 回滚
 

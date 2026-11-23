@@ -1,21 +1,69 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ExternalLink, FileText, RefreshCw, Search, Send, Sparkles } from '@lucide/vue'
-import { api, list, send } from '../api'
-import { date, knowledgeStates, relations, selection } from '../labels'
+import { ExternalLink, FileText, Search, Send, Sparkles } from '@lucide/vue'
+import { api, list, original, send } from '../api'
+import { date, knowledgeStates, relations } from '../labels'
 import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
+import PdfReader from '../components/PdfReader.vue'
 import Events from '../components/Events.vue'
 import KnowledgeDifferences from '../components/KnowledgeDifferences.vue'
 import Pagination from '../components/Pagination.vue'
 import StateBadge from '../components/StateBadge.vue'
 
-const props = defineProps({ session: Object, detail: String })
+const props = defineProps({ session: Object, detail: String, subjectId: String })
 const emit = defineEmits(['navigate', 'notice'])
-const table = ref({ rows: [], total: 0, page: 1, size: 20 })
-const filters = ref({ query: '', status: '', materialId: '' })
-const categories = ref({})
+const table = ref({ rows: [], total: 0, page: 1, size: 10 })
+const freshFilters = () => ({ query: '', status: '', human: '', sync: '', materialId: '' })
+const filters = ref(freshFilters())
+const pageSize = ref(10)
+const materialChoices = ref([])
+const materialQuery = ref('')
+const choicesTotal = ref(0)
 const content = ref(null)
+const reading = ref('split')
+const sourceText = ref('')
+const sourceError = ref('')
+const siblings = ref(null)
+const siblingPage = ref(1)
+const classLabel = ref('')
+watch(() => [content.value?.material?.id, siblingPage.value], async ([materialId,page], _, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
+  siblings.value = null
+  if (!materialId) return
+  try {
+    const result = await list('/knowledge',{materialId,page,size:20})
+    if (active) siblings.value = result
+  } catch (e) { if (active) panelIssue.value = e.message }
+})
+watch(() => [content.value?.knowledge?.typeCode,content.value?.knowledge?.knowledgeClass], async ([type,code], _, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
+  classLabel.value = ''
+  if (!type || !code) return
+  try {
+    const options = await api('/categories/'+type+'/classes')
+    if (active) classLabel.value = options.find(c => c.code === code)?.name || ''
+  } catch { /* The stored business code remains visible when the directory is unavailable. */ }
+})
+const humanLabels = { DRAFT:'草稿', PENDING:'待审核', APPROVED:'已通过', RETURNED:'已退回' }
+const syncLabels = { UNSYNCED:'未同步', SYNCING:'同步中', SYNCED:'已同步', SKIPPED:'已跳过', SYNC_FAILED:'同步异常' }
+const humanState = row => row.status in humanLabels ? row.status : 'APPROVED'
+const syncState = row => row.syncPhase === 'SKIPPED' ? 'SKIPPED' : row.status in syncLabels ? row.status : 'UNSYNCED'
+const latestAdvice = computed(() => content.value?.events?.find(e => e.action === 'AI_REVIEW'))
+let request = 0
+let choiceRequest = 0
+let choiceTimer
+async function loadChoices() {
+  const seq = ++choiceRequest
+  try {
+    const items = await list('/materials', { query: materialQuery.value, size: 50, subjectId: props.subjectId })
+    if (seq === choiceRequest) { materialChoices.value = items.rows; choicesTotal.value = items.total }
+  } catch (e) { if (seq === choiceRequest) issue.value = e.message }
+}
+watch(materialQuery, () => { clearTimeout(choiceTimer); choiceTimer = setTimeout(loadChoices,180) })
+const categories = ref({})
 const form = ref(null)
 const note = ref('')
 const issue = ref('')
@@ -30,6 +78,9 @@ let poll
 const draft = computed(() => content.value?.knowledge)
 const review = computed(() => content.value?.syncReview)
 const editable = computed(() => ['DRAFT', 'RETURNED'].includes(draft.value?.status))
+const changedFields = computed(() => editable.value && form.value && (form.value.title !== draft.value.title
+  || form.value.summary !== (draft.value.summary || '') || JSON.stringify(form.value.fields) !== JSON.stringify(draft.value.fields)
+  || Object.entries(form.value.relations).some(([k,v]) => v !== (draft.value.relations[k] || []).join('\n'))))
 const otherFields = computed(() => draft.value?.schema.fields.filter(field => field.id !== draft.value.schema.summaryKey) || [])
 const canSync = computed(() => ['APPROVED', 'SYNC_FAILED'].includes(draft.value?.status)
   || (draft.value?.status === 'SYNCING' && draft.value.syncLease < Date.now()))
@@ -48,18 +99,21 @@ const reviewMessages = {
 }
 
 async function load(page = 1) {
+  const seq = ++request
   loading.value = true
   try {
-    table.value = await list('/knowledge', { ...filters.value, page, size: 20 })
-    issue.value = ''
-  } catch (e) { issue.value = e.message }
-  finally { loading.value = false }
+    const result = await list('/knowledge', { ...filters.value, subjectId: props.subjectId, page, size: pageSize.value })
+    if (seq === request) { table.value = result; issue.value = '' }
+  } catch (e) { if (seq === request) issue.value = e.message }
+  finally { if (seq === request) loading.value = false }
 }
 
 function setDraft(data, resetNote) {
+  if (draft.value?.materialId !== data.knowledge.materialId) siblingPage.value = 1
   if (draft.value?.id !== data.knowledge.id) {
     versions.value = null
     versionDetail.value = null
+    reading.value = 'split'
   }
   if (draft.value?.id !== data.knowledge.id || draft.value?.revision !== data.knowledge.revision) advice.value = null
   content.value = data
@@ -70,6 +124,18 @@ function setDraft(data, resetNote) {
   }
   if (resetNote) note.value = ''
 }
+
+watch(() => content.value?.material?.id, async (id, _, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
+  sourceText.value = ''
+  sourceError.value = ''
+  if (!id || content.value.material.formatCode === 'PDF') return
+  try {
+    const data = await api('/materials/' + id)
+    if (active) sourceText.value = data.material.rawText || data.material.sourceAbstract || '此格式请下载原件查看。'
+  } catch (e) { if (active) sourceError.value = e.message }
+})
 
 async function preReview() {
   busy.value = true
@@ -196,15 +262,16 @@ async function act(action, approved) {
 }
 
 async function applyDetail(value) {
-  filters.value.materialId = ''
+  filters.value = freshFilters()
   if (value === 'pending' || value === 'synced') {
-    filters.value.status = value.toUpperCase()
+    if (value === 'pending') filters.value.human = 'PENDING'
+    else filters.value.sync = 'SYNCED'
     await load()
   } else if (value?.startsWith('material:')) {
     filters.value.materialId = value.slice(9)
     filters.value.status = ''
     await load()
-  } else if (value) await openDraft(value)
+  } else if (value) await Promise.all([load(),openDraft(value)])
   else await load()
 }
 
@@ -212,7 +279,7 @@ onMounted(async () => {
   try {
     categories.value = Object.fromEntries((await api('/categories')).map(item => [item.code, item.name]))
   } catch (e) { issue.value = e.message }
-  await Promise.all([load(), applyDetail(props.detail)])
+  await Promise.all([loadChoices(),applyDetail(props.detail)])
   poll = setInterval(async () => {
     const id = draft.value?.id
     if (busy.value || draft.value?.status !== 'SYNCING') return
@@ -223,51 +290,73 @@ onMounted(async () => {
     } catch (e) { panelIssue.value = e.message }
   }, 2400)
 })
-onUnmounted(() => clearInterval(poll))
+onUnmounted(() => { clearInterval(poll); clearTimeout(choiceTimer) })
+watch(() => props.subjectId, () => { filters.value.materialId = ''; load(); loadChoices() })
 watch(() => props.detail, applyDetail)
 </script>
 
 <template>
   <section class="page-head">
-    <div><h1>知识审核管理</h1><p>核对原文与模板字段，审批后同步至 4.23 知识管理。</p></div>
-    <button class="button secondary" @click="emit('navigate', 'materials', 'approved')"><FileText :size="17" /> 查看已审原文</button>
+    <h1>知识审核管理</h1>
   </section>
   <p v-if="issue" class="message error" role="alert">{{ issue }}</p>
   <section class="panel">
-    <div class="panel-head">
-      <h2>知识列表</h2>
-      <button class="icon-button" aria-label="刷新知识" :disabled="loading" @click="load(table.page)"><RefreshCw :size="17" /></button>
-    </div>
     <form class="filters" @submit.prevent="load()">
-      <label class="search"><Search :size="17" /><input v-model.trim="filters.query" maxlength="400" aria-label="搜索知识" placeholder="搜索知识标题或来源原文" /></label>
-      <select v-model="filters.status" aria-label="知识状态" @change="load()"><option value="">全部状态</option>
-        <option v-for="state in selection(knowledgeStates)" :key="state.value" :value="state.value">{{ state.label }}</option>
-      </select>
-      <button class="button secondary" :disabled="loading">查询</button>
-      <button v-if="filters.materialId" class="link" type="button" @click="filters.materialId = ''; load()">查看全部原文</button>
+      <label class="search"><Search :size="16" /><input v-model.trim="filters.query" maxlength="400" aria-label="搜索知识" placeholder="搜索知识名称或来源原文" /></label>
+      <input v-if="choicesTotal > 50 || materialQuery" v-model.trim="materialQuery" aria-label="搜索原文选项" placeholder="搜索原文选项" />
+      <select v-model="filters.materialId" aria-label="来源原文"><option value="">全部来源原文</option>
+        <option v-if="filters.materialId && !materialChoices.some(m => m.id === filters.materialId)" :value="filters.materialId">当前来源原文</option>
+        <option v-for="m in materialChoices" :key="m.id" :value="m.id">{{ m.title }}</option></select>
+      <select v-model="filters.human" aria-label="人工审核"><option value="">全部人工审核状态</option>
+        <option v-for="(name,key) in humanLabels" :key="key" :value="key">{{ name }}</option></select>
+      <select v-model="filters.sync" aria-label="同步状态"><option value="">全部同步状态</option>
+        <option v-for="(name,key) in syncLabels" :key="key" :value="key">{{ name }}</option></select>
+      <button class="button primary" :disabled="loading">查询</button>
+      <button class="button secondary" type="button" @click="filters=freshFilters(); materialQuery=''; load()">重置</button>
     </form>
     <div v-if="table.rows.length" class="table-wrap">
-      <table><thead><tr><th>知识标题</th><th>目标类型</th><th>更新于</th><th>审核及同步</th><th>操作</th></tr></thead>
-        <tbody><tr v-for="row in table.rows" :key="row.id">
-          <td><button class="link" @click="openDraft(row.id)">{{ row.title }}</button><small class="subline truncate" :title="row.materialTitle">{{ row.materialTitle }}</small></td>
-          <td>{{ categories[row.typeCode] || row.typeCode }}</td><td>{{ date(row.updatedAt) }}</td>
-          <td><StateBadge :state="row.status" :labels="knowledgeStates" /></td>
-          <td><button class="link" @click="openDraft(row.id)">{{ row.status === 'PENDING' ? '审核' : '查看' }}</button></td>
-        </tr></tbody>
-      </table>
-    </div>
-    <EmptyState v-else :title="loading ? '正在查询知识' : '暂无匹配知识'" detail="从已审核原文创建知识草稿后，可在这里编辑与审核。" />
-    <Pagination :page="table.page" :size="table.size" :total="table.total" @change="load" />
+      <table><thead><tr><th>序号</th><th>知识名称</th><th>类别</th><th>来源原文</th><th>AI预审核</th><th>人工审核</th><th>审核人</th><th>审核时间</th><th>同步状态</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="(row,i) in table.rows" :key="row.id">
+          <td>{{ (table.page-1)*table.size+i+1 }}</td><td><button class="link record-title" @click="openDraft(row.id)">{{ row.title }}</button></td>
+          <td>{{ categories[row.typeCode] || row.typeCode }}</td>
+          <td><button class="link record-title" @click="emit('navigate','materials',row.materialId)">{{ row.materialTitle }}</button></td>
+          <td><button v-if="row.aiReviewedAt" class="link" @click="openDraft(row.id)">查看意见</button><span v-else>未预审</span></td>
+          <td><StateBadge :state="humanState(row)" :labels="humanLabels" /></td>
+          <td>{{ row.reviewer || '—' }}</td><td>{{ date(row.reviewedAt) }}</td><td><StateBadge :state="syncState(row)" :labels="syncLabels" /></td>
+          <td><button class="link" @click="openDraft(row.id)">{{ row.status === 'PENDING' ? '审核' : '详情' }}</button></td>
+        </tr></tbody></table></div>
+    <EmptyState v-else :title="loading ? '正在查询知识' : '暂无匹配知识'" />
+    <Pagination v-bind="table" resizable @change="load" @resize="pageSize = $event; load()" />
   </section>
 
-  <Drawer v-if="draft" :title="draft.title" subtitle="知识稿件" wide :busy="busy" @close="content = null">
+  <Drawer v-if="draft" :title="draft.title" subtitle="知识审核管理" workbench :busy="busy" @close="content = null">
+    <div class="reader-bar"><div class="tab-buttons" aria-label="阅读方式">
+      <button v-for="(label,key) in {split:'对照查看', knowledge:'只看知识', source:'只看原文'}" :key="key" :aria-pressed="reading === key"
+        @click="reading = key">{{ label }}</button></div>
+      <div v-if="siblings?.total > 1" class="sibling-picker">
+        <label class="filter-field">同一原文的知识<select :value="draft.id" aria-label="切换知识" :disabled="busy || changedFields" @change="openDraft($event.target.value)">
+          <option v-if="!siblings.rows.some(k => k.id === draft.id)" :value="draft.id">{{ draft.title }}</option>
+          <option v-for="k in siblings.rows" :key="k.id" :value="k.id">{{ categories[k.typeCode] }} · {{ k.title }}</option></select></label>
+        <template v-if="siblings.total > siblings.size"><button class="link" :disabled="siblingPage <= 1" @click="siblingPage--">上一页</button>
+          <button class="link" :disabled="siblingPage * siblings.size >= siblings.total" @click="siblingPage++">下一页</button></template>
+        <small v-if="changedFields">保存草稿后可切换</small>
+      </div></div>
+    <div class="review-columns" :class="{single:reading !== 'split'}">
+      <section v-show="reading !== 'knowledge'" class="source-column">
+        <div class="reader-title"><h3>来源原文</h3><a v-if="content.material.formatCode !== 'PDF'" :href="original(content.material.id)" target="_blank" rel="noopener noreferrer">打开原件 ↗</a></div>
+        <p class="original-title">{{ content.material.title }}</p>
+        <PdfReader v-if="content.material.formatCode === 'PDF'" :material-id="content.material.id" :title="content.material.title" />
+        <p v-else-if="sourceError" class="message error">{{ sourceError }}</p><pre v-else class="original-text">{{ sourceText || '正在读取原文…' }}</pre>
+      </section>
+      <section v-show="reading !== 'source'" class="knowledge-column">
     <div class="toolbar">
       <span v-if="draft.syncPhase === 'SKIPPED'" class="message success">内容一致，已跳过</span>
       <StateBadge v-else :state="draft.status" :labels="knowledgeStates" />
-      <button class="link" @click="emit('navigate', 'materials', content.material.id)"><FileText :size="16" /> 核对来源原文</button>
+      <strong>{{ draft.schema.category.name }}<span v-if="draft.knowledgeClass"> › {{ classLabel || draft.knowledgeClass }}</span></strong>
     </div>
+    <details class="review-metadata"><summary>资料信息</summary>
     <dl class="metadata">
-      <div><dt>知识目标</dt><dd>{{ draft.schema.category.name }}<span v-if="draft.knowledgeClass"> · {{ draft.knowledgeClass }}</span></dd></div>
+      <div><dt>知识目标</dt><dd>{{ draft.schema.category.name }}<span v-if="draft.knowledgeClass"> · {{ classLabel ? classLabel + '（' + draft.knowledgeClass + '）' : draft.knowledgeClass }}</span></dd></div>
       <div><dt>模板</dt><dd>{{ draft.schema.origin }} · 规则版本 {{ draft.schema.profileRevision || 0 }}</dd></div>
       <div><dt>来源原文</dt><dd>{{ content.material.title }}</dd></div>
       <div v-if="draft.modelName"><dt>解析模型</dt><dd><Sparkles :size="14" /> {{ draft.modelName }}</dd></div>
@@ -275,6 +364,7 @@ watch(() => props.detail, applyDetail)
       <div v-else-if="draft.updateTargetId"><dt>版本更新目标</dt><dd class="hash">{{ draft.updateTargetId }}</dd></div>
       <div v-if="draft.remoteUrl"><dt>4.23 预览</dt><dd><a :href="draft.remoteUrl" target="_blank" rel="noopener noreferrer">打开业务知识 <ExternalLink :size="14" /></a></dd></div>
     </dl>
+    <button class="link" @click="emit('navigate','materials',content.material.id)"><FileText :size="16" /> 查看原文详情</button></details>
     <p v-if="draft.syncError" class="message error" role="alert">{{ draft.syncError }}</p>
     <p v-if="canSync && !session.cdssSync" class="message">服务端尚未启用 4.23 同步。</p>
     <form id="knowledge-form" class="form-section form-grid" @submit.prevent="save(false)">
@@ -355,15 +445,16 @@ watch(() => props.detail, applyDetail)
         <details v-if="versionDetail.after" class="raw-text"><summary>同步后快照</summary><pre>{{ snapshotText(versionDetail.after) }}</pre></details>
       </section>
     </section>
-    <section v-if="draft.status === 'PENDING'" class="form-section form-grid">
+    <section v-if="draft.status === 'PENDING' || latestAdvice" class="form-section form-grid">
       <div class="toolbar">
         <h3>AI 预审核</h3>
-        <button class="button secondary" :disabled="busy" @click="preReview"><Sparkles :size="16" /> 生成核对提示</button>
+        <button v-if="draft.status === 'PENDING'" class="button secondary" :disabled="busy" @click="preReview"><Sparkles :size="16" /> 生成核对提示</button>
       </div>
       <ul v-if="advice?.findings.length" class="simple-list">
         <li v-for="(finding, index) in advice.findings" :key="index">{{ finding }}</li>
       </ul>
       <p v-else-if="advice" class="muted">模型未返回核对提示。</p>
+      <p v-else-if="latestAdvice" class="reading-text">{{ latestAdvice.note }}</p>
     </section>
     <div v-if="draft.status === 'PENDING' || canReopen || draft.syncPhase === 'POSTING'" class="form-section form-grid">
       <h3>{{ draft.syncPhase === 'POSTING' ? '业务记录复核' : '人工审核' }}</h3>
@@ -372,6 +463,8 @@ watch(() => props.detail, applyDetail)
     </div>
     <p v-if="panelIssue" class="message error" role="alert">{{ panelIssue }}</p>
     <Events :events="content.events" />
+      </section>
+    </div>
     <template v-if="editable || draft.status === 'PENDING' || canSync" #footer>
       <template v-if="editable">
         <button class="button secondary" form="knowledge-form" :disabled="busy">保存草稿</button>

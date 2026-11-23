@@ -1,13 +1,15 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Plus, Search } from '@lucide/vue'
 import { api, send } from '../api'
+import DirectoryTree from '../components/DirectoryTree.vue'
+import Pagination from '../components/Pagination.vue'
 import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StateBadge from '../components/StateBadge.vue'
 
 const props = defineProps({ session: Object })
-const emit = defineEmits(['notice', 'navigate'])
+const emit = defineEmits(['notice', 'navigate', 'directory-changed', 'scope'])
 const groups = { SUBJECT: '学科病种目录', DOMAIN: '知识类别目录', MATERIAL: '资料类型' }
 const nodes = ref([])
 const group = ref('SUBJECT')
@@ -17,17 +19,45 @@ const error = ref('')
 const formError = ref('')
 const busy = ref(false)
 
+const selected = ref('')
+const size = ref(10)
+const page = ref(1)
+const groupNodes = computed(() => nodes.value.filter(n => n.groupCode === group.value))
+const current = computed(() => groupNodes.value.find(n => n.id === selected.value))
+const siblingsOf = node => groupNodes.value.filter(n => n.parentId === node.parentId)
 const rows = computed(() => {
-  const current = nodes.value.filter(node => node.groupCode === group.value)
-  const roots = current.filter(node => !node.parentId)
-  const ordered = roots.flatMap(root => [root, ...current.filter(node => node.parentId === root.id)])
-  const key = query.value.trim().toLowerCase()
-  return ordered.filter(node => !key || [node.name, node.businessCode, nameOf(node.parentId)]
-    .some(value => value?.toLowerCase().includes(key)))
+  const q = query.value.trim().toLowerCase()
+  if (q) return groupNodes.value.filter(n => [n.name,n.businessCode].some(v => v?.toLowerCase().includes(q)))
+  if (!current.value) return groupNodes.value.filter(n => !n.parentId)
+  if (current.value.parentId || group.value === 'MATERIAL') return [current.value]
+  return groupNodes.value.filter(n => n.parentId === current.value.id)
 })
+const visible = computed(() => rows.value.slice((page.value-1)*size.value,page.value*size.value))
+watch(group, () => { selected.value = ''; query.value = ''; page.value = 1 })
+watch([selected,query], () => { page.value = 1 })
+function adjacent(node, offset) {
+  const siblings = siblingsOf(node)
+  return siblings[siblings.findIndex(n => n.id === node.id)+offset]
+}
+async function move(node,offset) {
+  const peer = adjacent(node,offset)
+  if (!peer) return
+  busy.value = true
+  try { await send('/classifications/'+node.id+'/position',{ peerId:peer.id, up:offset<0, revision:node.revision },'PUT'); await load(); emit('directory-changed') }
+  catch(e) { error.value=e.message } finally { busy.value=false }
+}
+async function toggle(node) {
+  busy.value=true
+  try { await send('/classifications/'+node.id,{...node,enabled:!node.enabled},'PUT'); await load(); emit('directory-changed') }
+  catch(e) { error.value=e.message } finally { busy.value=false }
+}
 const parents = computed(() => nodes.value.filter(node => node.groupCode === form.value?.groupCode
   && !node.parentId && node.id !== form.value?.id && (node.enabled || node.id === form.value?.parentId)))
 
+function showMaterials(node) {
+  emit('scope', node.groupCode === 'SUBJECT' ? node.id : '')
+  emit('navigate', 'materials', 'class:' + node.id)
+}
 function nameOf(id) { return nodes.value.find(node => node.id === id)?.name }
 function active(node) { return node.enabled && (!node.parentId || nodes.value.find(parent => parent.id === node.parentId)?.enabled) }
 
@@ -40,7 +70,7 @@ async function load() {
 
 function edit(node) {
   form.value = node ? { ...node, parentId: node.parentId || '' } :
-    { groupCode: group.value, parentId: '', name: '', businessCode: '', displayOrder: 10, enabled: true }
+    { groupCode: group.value, parentId: group.value === 'MATERIAL' ? '' : current.value?.parentId || current.value?.id || '', name: '', businessCode: '', displayOrder: 10, enabled: true }
   formError.value = ''
 }
 
@@ -53,6 +83,7 @@ async function save() {
       { groupCode, name, parentId, businessCode, displayOrder, enabled, revision }, id ? 'PUT' : 'POST')
     form.value = null
     emit('notice', '分类已保存')
+    emit('directory-changed')
     await load()
   } catch (e) { formError.value = e.message }
   finally { busy.value = false }
@@ -63,31 +94,30 @@ onMounted(load)
 
 <template>
   <section class="page-head">
-    <div><h1>知识分类配置</h1><p>维护原文使用的学科病种、知识类别和资料类型。</p></div>
-    <button v-if="props.session.admin" class="button primary" @click="edit()"><Plus :size="18" /> 新建分类</button>
+    <h1>知识分类配置</h1>
+    <div class="tab-buttons"><button v-for="(name,k) in groups" :key="k" :aria-pressed="group===k" @click="group=k">{{ name }}</button></div>
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
-  <section class="panel">
-    <div class="filters">
-      <select v-model="group" aria-label="分类维度">
-        <option v-for="(label, key) in groups" :key="key" :value="key">{{ label }}</option>
-      </select>
-      <label class="search"><Search :size="17" /><input v-model="query" placeholder="搜索分类名称或编码" aria-label="搜索分类" /></label>
-    </div>
-    <div v-if="rows.length" class="table-wrap">
-      <table>
-        <thead><tr><th>分类名称</th><th>对应编码</th><th>状态</th><th>使用情况</th><th>操作</th></tr></thead>
-        <tbody><tr v-for="node in rows" :key="node.id">
-          <td><small v-if="node.parentId" class="subline">{{ nameOf(node.parentId) }}</small>{{ node.name }}</td>
-          <td>{{ node.businessCode || '—' }}</td>
-          <td><StateBadge :state="active(node) ? 'ACTIVE' : 'OFF'" :labels="{ ACTIVE: '启用', OFF: node.enabled ? '上级停用' : '停用' }" /></td>
-          <td><button class="link" @click="emit('navigate', 'materials', 'class:' + node.id)">{{ node.materialCount }} 份原文</button> / {{ node.knowledgeCount }} 条知识</td>
-          <td><button v-if="props.session.admin" class="link" @click="edit(node)">编辑</button></td>
-        </tr></tbody>
-      </table>
-    </div>
-    <EmptyState v-else title="暂无匹配分类" />
-  </section>
+  <div class="directory-layout">
+    <DirectoryTree :key="group" :title="groups[group]" :nodes="groupNodes" :all-label="group === 'SUBJECT' ? '全部学科' : '全部分类'"
+      :selected="selected" @select="selected=$event;query=''" />
+    <section class="panel"><div class="panel-head"><h2>{{ current?.name || groups[group] }}</h2>
+      <button v-if="props.session.admin" class="button primary" @click="edit()"><Plus :size="16" />{{ group==='SUBJECT' ? (selected ? '新增病种' : '新增学科') : '新增分类' }}</button></div>
+      <div class="filters"><label class="search"><Search :size="15" /><input v-model.trim="query" placeholder="搜索分类名称或编码" aria-label="搜索分类" /></label></div>
+      <div v-if="rows.length" class="table-wrap"><table><thead><tr><th>序号</th><th>名称</th><th>子项</th><th>对应编码</th><th>状态</th><th>使用情况</th><th>操作</th></tr></thead>
+        <tbody><tr v-for="(node,i) in visible" :key="node.id"><td>{{ (page-1)*size+i+1 }}</td>
+          <td><button class="link" @click="selected=node.id;query=''">{{ node.name }}</button></td>
+          <td>{{ groupNodes.filter(n => n.parentId === node.id).length }}</td><td>{{ node.businessCode || '—' }}</td>
+          <td><StateBadge :state="active(node) ? 'ACTIVE' : 'OFF'" :labels="{ACTIVE:'启用',OFF:node.enabled ? '上级停用' : '停用'}" /></td>
+          <td><button class="link" @click="showMaterials(node)">{{ node.materialCount }} 份原文</button> / {{ node.knowledgeCount }} 条知识</td>
+          <td><div v-if="props.session.admin" class="table-actions"><button class="link" @click="edit(node)">编辑</button>
+            <button class="link" :disabled="busy" @click="toggle(node)">{{ node.enabled ? '停用' : '启用' }}</button>
+            <button class="link" :disabled="busy || !adjacent(node,-1)" @click="move(node,-1)">上移</button><button class="link" :disabled="busy || !adjacent(node,1)" @click="move(node,1)">下移</button></div></td>
+        </tr></tbody></table></div>
+      <EmptyState v-else title="暂无匹配分类" />
+      <Pagination :page="page" :size="size" :total="rows.length" resizable @change="page=$event" @resize="size=$event;page=1" />
+    </section>
+  </div>
   <Drawer v-if="form" :title="form.id ? '编辑分类' : '新建分类'" :busy="busy" @close="form = null">
     <form id="class-form" class="form-grid" @submit.prevent="save">
       <label>分类名称<input v-model.trim="form.name" required maxlength="120" /></label>
