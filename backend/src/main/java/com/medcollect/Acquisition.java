@@ -42,11 +42,11 @@ class Acquisition {
         this.clock = clock;
     }
 
-    List<Candidate> discover(Task task, Source source, String target) throws IOException {
+    List<Candidate> discover(Task task, Source source, String target, List<String> materialTypes) throws IOException {
         return switch (task.collectionMode()) {
             case URL -> fromUrl(task, target);
             case EUROPE_PMC -> fromLiterature(task);
-            case WEB -> fromWeb(task, source);
+            case WEB -> fromWeb(task, source, materialTypes);
             case BUSINESS -> List.of(new Candidate(task.name(),business.urlFor(task.queryText()),null,task.queryText()));
             case UPLOAD -> throw bad("手工上传任务请选择原件文件");
         };
@@ -62,7 +62,6 @@ class Acquisition {
         var links = new LinkedHashMap<String, Candidate>();
         var section = document.selectFirst("article, main, [role=main]");
         for (var link : (section == null ? document : section).select("a[href]")) {
-            if (links.size() >= task.resultLimit()) break;
             String raw = link.absUrl("href");
             if (raw.isBlank()) continue;
             try {
@@ -97,9 +96,10 @@ class Acquisition {
         return results;
     }
 
-    private List<Candidate> fromWeb(Task task, Source source) throws IOException {
+    private List<Candidate> fromWeb(Task task, Source source, List<String> materialTypes) throws IOException {
         if (trim(settings.searxUrl()).isBlank()) throw bad("全网搜索需要配置 SearXNG 服务");
         String query = task.queryText();
+        if (!materialTypes.isEmpty() && !materialTypes.contains("其他资料")) query += " ("+String.join(" OR ",materialTypes)+")";
         if (source != null) query += " site:" + httpUri(source.url()).getHost();
         String endpoint = baseUrl(settings.searxUrl());
         if (!endpoint.endsWith("/search")) endpoint += "/search";

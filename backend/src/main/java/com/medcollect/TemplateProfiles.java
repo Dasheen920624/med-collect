@@ -35,6 +35,10 @@ class TemplateProfiles {
 
     void availableForCollection(String code) { templates.availableForCollection(code); }
 
+    KnowledgeTemplates.Schema draftSchema(String code, String selected) {
+        return schema(code, templates.draftClass(code, selected));
+    }
+
     KnowledgeTemplates.Schema schema(String code, String knowledgeClass) {
         var base = templates.schema(code, knowledgeClass);
         return store.db().sql("SELECT rules_json, revision FROM mc_template_profile WHERE profile_key = :key")

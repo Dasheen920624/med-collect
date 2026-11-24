@@ -22,7 +22,7 @@ const history = ref(null)
 const expanded = ref(['properties','content'])
 const sections = computed(() => schema.value ? [
   { key:'properties', name:'属性配置', items:schema.value.fields.filter(f => f.property) },
-  { key:'content', name:'内容目录', items:schema.value.fields.filter(f => !f.property) },
+  { key:'content', name:'目录配置', items:schema.value.fields.filter(f => !f.property) },
 ].filter(g => g.items.length) : [])
 const parameters = computed(() => schema.value && { ...schema.value, rules: Object.fromEntries(
   Object.entries(rules.value).filter(([,r]) => r.required || r.instruction.trim())) })
@@ -102,7 +102,7 @@ onMounted(async () => {
 
 <template>
   <section class="page-head">
-    <h1>解析模板</h1>
+    <h1>知识生成模板</h1>
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
   <section class="panel">

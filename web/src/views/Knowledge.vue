@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ExternalLink, FileText, Search, Send, Sparkles } from '@lucide/vue'
 import { api, list, original, send } from '../api'
 import { date, knowledgeStates, relations } from '../labels'
@@ -18,7 +18,7 @@ import StateBadge from '../components/StateBadge.vue'
 const props = defineProps({ session: Object, detail: String, subjectId: String })
 const emit = defineEmits(['navigate', 'notice'])
 const table = ref({ rows: [], total: 0, page: 1, size: 10 })
-const freshFilters = () => ({ query: '', status: '', human: '', sync: '', materialId: '' })
+const freshFilters = () => ({ query: '', status: '', human: '', sync: '', materialId: '', submission:'', publication:'' })
 const filters = ref(freshFilters())
 const pageSize = ref(10)
 const materialChoices = ref([])
@@ -28,9 +28,30 @@ const content = ref(null)
 const reading = ref('split')
 const sourceText = ref('')
 const sourceError = ref('')
+const evidenceQuery=ref(''), evidenceMessage=ref(''), hit=ref(null), pdfReader=ref(null), marked=ref(null)
+let evidenceRequest=0
+async function locateEvidence(query=evidenceQuery.value) {
+  const term=query.trim(), id=content.value?.material.id, seq=++evidenceRequest
+  if (!id || !term) return
+  evidenceQuery.value=term; evidenceMessage.value=''; hit.value=null
+  if (reading.value==='knowledge') reading.value='split'
+  try {
+    if (content.value.material.formatCode==='PDF') {
+      const result=await list('/materials/'+id+'/pdf-preview/locate',{q:term})
+      if (seq!==evidenceRequest) return
+      if (result.page) { pdfReader.value?.go(result.page); evidenceMessage.value='已定位到第 '+result.page+' 页' }
+      else evidenceMessage.value='原件文字层中未找到该片段'
+    } else {
+      const at=sourceText.value.toLowerCase().indexOf(term.toLowerCase())
+      if (at<0) evidenceMessage.value='原文中未找到该片段'
+      else { hit.value={at,end:at+term.length}; await nextTick(); marked.value?.scrollIntoView({block:'center'}) }
+    }
+  } catch(e) { if(seq===evidenceRequest) evidenceMessage.value=e.message }
+}
 const siblings = ref(null)
 const siblingPage = ref(1)
 const classLabel = ref('')
+const classOptions = ref([])
 watch(() => [content.value?.material?.id, siblingPage.value], async ([materialId,page], _, onCleanup) => {
   let active = true
   onCleanup(() => { active = false })
@@ -45,10 +66,11 @@ watch(() => [content.value?.knowledge?.typeCode,content.value?.knowledge?.knowle
   let active = true
   onCleanup(() => { active = false })
   classLabel.value = ''
-  if (!type || !code) return
+  classOptions.value = []
+  if (!type) return
   try {
     const options = await api('/categories/'+type+'/classes')
-    if (active) classLabel.value = options.find(c => c.code === code)?.name || ''
+    if (active) { classOptions.value = options; classLabel.value = options.find(c => c.code === code)?.name || '' }
   } catch { /* The stored business code remains visible when the directory is unavailable. */ }
 })
 const humanLabels = { DRAFT:'草稿', PENDING:'待审核', APPROVED:'已通过', RETURNED:'已退回', REFERENCE_ONLY:'仅供对照' }
@@ -84,9 +106,10 @@ const draft = computed(() => content.value?.knowledge)
 const review = computed(() => content.value?.syncReview)
 const editable = computed(() => ['DRAFT', 'RETURNED'].includes(draft.value?.status))
 const changedFields = computed(() => editable.value && form.value && (form.value.title !== draft.value.title
-  || form.value.summary !== (draft.value.summary || '') || JSON.stringify(form.value.fields) !== JSON.stringify(draft.value.fields)
+  || form.value.knowledgeClass !== (draft.value.knowledgeClass || '') || form.value.summary !== (draft.value.summary || '') || JSON.stringify(form.value.fields) !== JSON.stringify(draft.value.fields)
   || Object.entries(form.value.relations).some(([k,v]) => JSON.stringify(v) !== JSON.stringify(draft.value.relations[k] || []))))
-const otherFields = computed(() => draft.value?.schema.fields.filter(field => field.id !== draft.value.schema.summaryKey) || [])
+const otherFields = computed(() => draft.value?.schema.fields.filter(field => field.id !== draft.value.schema.summaryKey
+  && !['laiyuan','references'].includes(field.id)) || [])
 const canSync = computed(() => ['APPROVED', 'SYNC_FAILED'].includes(draft.value?.status)
   || (draft.value?.status === 'SYNCING' && draft.value.syncLease < Date.now()))
 const canReopen = computed(() => canSync.value && draft.value?.status !== 'SYNCING'
@@ -125,7 +148,7 @@ function setDraft(data, resetNote) {
   content.value = data
   const knowledge = data.knowledge
   form.value = {
-    title: knowledge.title, summary: knowledge.summary || '', fields: { ...knowledge.fields },
+    title: knowledge.title, knowledgeClass:knowledge.knowledgeClass || '', summary: knowledge.summary || '', fields: { ...knowledge.fields },
     relations: Object.fromEntries(Object.entries(knowledge.relations).map(([key, values]) => [key, [...values]])),
   }
   if (resetNote) note.value = ''
@@ -136,6 +159,7 @@ watch(() => content.value?.material?.id, async (id, _, onCleanup) => {
   onCleanup(() => { active = false })
   sourceText.value = ''
   sourceError.value = ''
+  ++evidenceRequest; evidenceQuery.value=''; evidenceMessage.value=''; hit.value=null
   if (!id || content.value.material.formatCode === 'PDF') return
   try {
     const data = await api('/materials/' + id)
@@ -301,34 +325,42 @@ watch(() => props.detail, applyDetail)
 
 <template>
   <section class="page-head">
-    <h1>审核与同步</h1>
+    <h1>知识审核管理</h1>
   </section>
   <p v-if="issue" class="message error" role="alert">{{ issue }}</p>
   <section class="panel">
     <form class="filters" @submit.prevent="load()">
       <label class="search"><Search :size="16" /><input v-model.trim="filters.query" maxlength="400" aria-label="搜索知识" placeholder="搜索知识名称或来源原文" /></label>
+      <select v-model="filters.submission" aria-label="提交状态"><option value="">--请选择提交状态--</option>
+        <option value="SUBMITTED">已提交</option><option value="UNSUBMITTED">未提交</option></select>
+      <select v-model="filters.human" aria-label="审核状态"><option value="">--请选择审核状态--</option>
+        <option value="REVIEWED">已审核</option><option value="UNREVIEWED">未审核</option>
+        <option value="EDITABLE">待整理草稿或退回稿</option>
+        <option v-for="(name,key) in humanLabels" :key="key" :value="key">{{ name }}</option></select>
+      <select v-model="filters.publication" aria-label="发布状态"><option value="">--请选择发布状态--</option>
+        <option value="PUBLISHED">已发布</option><option value="UNPUBLISHED">未发布</option><option value="UNKNOWN">待核验</option></select>
+      <button class="button primary" :disabled="loading">查询</button>
+      <button class="button secondary" type="button" @click="filters=freshFilters(); materialQuery=''; load()">重置</button>
+      <details class="extra-filters" :open="!!(filters.sync || filters.materialId)"><summary>更多筛选</summary><div class="actions">
       <input v-if="choicesTotal > 50 || materialQuery" v-model.trim="materialQuery" aria-label="搜索原文选项" placeholder="搜索原文选项" />
       <select v-model="filters.materialId" aria-label="来源原文"><option value="">全部来源原文</option>
         <option v-if="filters.materialId && !materialChoices.some(m => m.id === filters.materialId)" :value="filters.materialId">当前来源原文</option>
         <option v-for="m in materialChoices" :key="m.id" :value="m.id">{{ m.title }}</option></select>
-      <select v-model="filters.human" aria-label="人工审核"><option value="">全部人工审核状态</option>
-        <option value="EDITABLE">待整理草稿或退回稿</option>
-        <option v-for="(name,key) in humanLabels" :key="key" :value="key">{{ name }}</option></select>
       <select v-model="filters.sync" aria-label="同步状态"><option value="">全部同步状态</option>
         <option v-for="(name,key) in syncLabels" :key="key" :value="key">{{ name }}</option></select>
-      <button class="button primary" :disabled="loading">查询</button>
-      <button class="button secondary" type="button" @click="filters=freshFilters(); materialQuery=''; load()">重置</button>
+      </div></details>
     </form>
     <div v-if="table.rows.length" class="table-wrap">
-      <table><thead><tr><th>序号</th><th>知识名称</th><th>类别</th><th>来源原文</th><th>AI预审核</th><th>人工审核</th><th>审核人</th><th>审核时间</th><th>同步状态</th><th>操作</th></tr></thead>
+      <table><thead><tr><th>序号</th><th>知识名称 / 类别</th><th>来源原文</th><th>AI预审核</th><th>提交状态</th><th>审核状态</th><th>发布状态</th><th>同步状态</th><th>操作</th></tr></thead>
         <tbody><tr v-for="(row,i) in table.rows" :key="row.id">
-          <td>{{ (table.page-1)*table.size+i+1 }}</td><td><button class="link record-title" @click="openDraft(row.id)">{{ row.title }}</button></td>
-          <td>{{ categories[row.typeCode] || row.typeCode }}</td>
+          <td>{{ (table.page-1)*table.size+i+1 }}</td><td><button class="link record-title" @click="openDraft(row.id)">{{ row.title }}</button><small class="subline">{{ categories[row.typeCode] || row.typeCode }}</small></td>
           <td><button class="link record-title" @click="emit('navigate','materials',row.materialId)">{{ row.materialTitle }}</button></td>
           <td><button v-if="row.aiReviewedAt" class="link" @click="openDraft(row.id)">查看意见</button><span v-else>未预审</span></td>
-          <td><StateBadge :state="humanState(row)" :labels="humanLabels" /></td>
-          <td>{{ row.reviewer || '—' }}</td><td>{{ date(row.reviewedAt) }}</td><td><StateBadge :state="syncState(row)" :labels="outcomeLabels" /></td>
-          <td><button class="link" @click="openDraft(row.id)">{{ row.status === 'PENDING' ? '审核' : row.status === 'APPROVED' ? '办理同步' : row.status === 'SYNCED' ? '查看回执' : '详情' }}</button></td>
+          <td>{{ row.status === 'DRAFT' ? '未提交' : '已提交' }}</td>
+          <td><StateBadge :state="humanState(row)" :labels="humanLabels" /><small v-if="row.reviewer" class="subline">{{ row.reviewer }} · {{ date(row.reviewedAt) }}</small></td>
+          <td :title="row.remoteId ? '4.23 最近回读的发布状态' : ''">{{ !row.remoteId ? '未发布' : row.businessRelease==='1' ? '已发布' : row.businessRelease==='2' ? '已撤回' : row.businessRelease==='0' ? '未发布' : '待核验' }}</td>
+          <td><StateBadge :state="syncState(row)" :labels="outcomeLabels" /></td>
+          <td><button class="link" @click="openDraft(row.id)">查看知识</button></td>
         </tr></tbody></table></div>
     <EmptyState v-else :title="loading ? '正在查询知识' : '暂无匹配知识'" />
     <Pagination v-bind="table" resizable @change="load" @resize="pageSize = $event; load()" />
@@ -350,8 +382,10 @@ watch(() => props.detail, applyDetail)
       <section v-show="reading !== 'knowledge'" class="source-column">
         <div class="reader-title"><h3>来源原文</h3><a v-if="content.material.formatCode !== 'PDF'" :href="original(content.material.id)" target="_blank" rel="noopener noreferrer">打开原件 ↗</a></div>
         <p class="original-title">{{ content.material.title }}</p>
-        <PdfReader v-if="content.material.formatCode === 'PDF'" :material-id="content.material.id" :title="content.material.title" />
-        <p v-else-if="sourceError" class="message error">{{ sourceError }}</p><pre v-else class="original-text">{{ sourceText || '正在读取原文…' }}</pre>
+        <form class="evidence-search" @submit.prevent="locateEvidence()"><input type="search" v-model="evidenceQuery" maxlength="300" placeholder="查找原文片段" aria-label="原文片段"/>
+          <button class="button secondary" :disabled="!evidenceQuery.trim()">定位原文</button></form><small role="status">{{ evidenceMessage }}</small>
+        <PdfReader v-if="content.material.formatCode === 'PDF'" ref="pdfReader" :material-id="content.material.id" :title="content.material.title" />
+        <p v-else-if="sourceError" class="message error">{{ sourceError }}</p><pre v-else class="original-text"><template v-if="hit">{{ sourceText.slice(0,hit.at) }}<mark ref="marked">{{ sourceText.slice(hit.at,hit.end) }}</mark>{{ sourceText.slice(hit.end) }}</template><template v-else>{{ sourceText || '正在读取原文…' }}</template></pre>
       </section>
       <section v-show="reading !== 'source'" class="knowledge-column">
     <div class="toolbar">
@@ -374,7 +408,21 @@ watch(() => props.detail, applyDetail)
     <p v-if="draft.syncError" class="message error" role="alert">{{ draft.syncError }}</p>
     <p v-if="canSync && !session.cdssSync" class="message">服务端尚未启用 4.23 同步。</p>
     <form id="knowledge-form" class="form-section form-grid" @submit.prevent="save(false)">
-      <h3>知识内容</h3>
+      <h3>采集来源</h3>
+      <dl class="metadata provenance-block">
+        <div><dt>来源站点</dt><dd>{{ content.material.sourceName || '未登记' }}</dd></div>
+        <div><dt>采集原件</dt><dd><a :href="original(content.material.id)" target="_blank" rel="noopener">{{ content.material.fileName }}</a></dd></div>
+        <div v-if="content.material.sourceUrl"><dt>原始地址</dt><dd><a :href="content.material.sourceUrl" target="_blank" rel="noopener noreferrer">{{ content.material.sourceUrl }}</a></dd></div>
+        <div v-if="content.material.fetchedUrl && content.material.fetchedUrl!==content.material.sourceUrl"><dt>实际获取地址</dt><dd><a :href="content.material.fetchedUrl" target="_blank" rel="noopener noreferrer">{{ content.material.fetchedUrl }}</a></dd></div>
+      </dl>
+      <h3>知识出处</h3>
+      <p class="reading-text">{{ content.material.citation }}</p>
+      <label v-if="editable || form.fields.laiyuan">出处补充<textarea v-model="form.fields.laiyuan" rows="2" maxlength="12000" :readonly="!editable"></textarea></label>
+      <label v-if="content.material.formatCode!=='PDF' && (editable || form.fields.references)">参考文献<textarea v-model="form.fields.references" rows="2" maxlength="12000" :readonly="!editable"></textarea></label>
+      <h3>知识正文</h3>
+      <label v-if="editable && !draft.updateTargetId && classOptions.length">目标知识类别<select v-model="form.knowledgeClass">
+        <option value="" disabled>请选择业务类别</option><option v-for="c in classOptions" :key="c.code" :value="c.code">{{ c.name }} · {{ c.code }}</option>
+      </select></label>
       <label>标题<input v-model="form.title" required maxlength="100" :readonly="!editable" /></label>
       <label>摘要<textarea v-model="form.summary" rows="7" maxlength="12000" :readonly="!editable"></textarea></label>
       <p v-if="content.material.formatCode === 'PDF'" class="muted">同步时保留摘要，并绑定 PDF 原件。</p>
@@ -407,7 +455,7 @@ watch(() => props.detail, applyDetail)
       <p v-if="canCompare && !review" class="muted">审核前核对 4.23 现有知识。</p>
       <BusinessTargetPicker v-if="canCompare && !draft.updateTargetId" :key="draft.id" :draft-id="draft.id" :busy="busy" @select="id => compare(id,true)" />
       <template v-if="review">
-        <p v-if="draft.syncPhase !== 'SKIPPED' && draft.status !== 'SYNCED'">{{ reviewMessages[review.operation] }}</p>
+        <p v-if="draft.syncPhase !== 'SKIPPED' && draft.status !== 'SYNCED'">{{ review.operation==='REFERENCE_ONLY' && !review.target?.knowledgeClass ? '4.23 目标缺少有效类别，已归入只读对照。' : reviewMessages[review.operation] }}</p>
         <p v-if="review.mayResetBusinessReview && draft.status !== 'SYNCED'" class="message">
           4.23 可能按业务权限重置原记录的审核或发布状态，并停用该知识。
         </p>
@@ -457,7 +505,7 @@ watch(() => props.detail, applyDetail)
         <button v-if="draft.status === 'PENDING'" class="button secondary" :disabled="busy" @click="preReview"><Sparkles :size="16" /> 生成核对提示</button>
       </div>
       <ul v-if="advice?.findings.length" class="simple-list">
-        <li v-for="(finding, index) in advice.findings" :key="index">{{ finding }}</li>
+        <li v-for="(finding, index) in advice.findings" :key="index">{{ finding }} <button v-if="advice.quotes?.[index]" class="link" @click="locateEvidence(advice.quotes[index])">定位依据</button></li>
       </ul>
       <p v-else-if="advice" class="muted">模型未返回核对提示。</p>
       <p v-else-if="latestAdvice" class="reading-text">{{ latestAdvice.note }}</p>

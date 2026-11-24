@@ -6,6 +6,7 @@ export const knowledgeStates = {
 export const runStates = { RUNNING: '执行中', SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败' }
 export const modes = { URL: '指定网址下载', EUROPE_PMC: '文献检索', WEB: '全网搜索', UPLOAD: '手工上传', BUSINESS: '4.23 业务文献' }
 export const resultStates = { CAPTURED: '原文已入库', DUPLICATE: '已有记录', FAILED: '获取失败',
+  FILTERED: '资料类型不符',
   CANDIDATE: '搜索结果', METADATA: '仅来源和摘要', REMOVED: '原件已移除' }
 
 export const relations = {
@@ -14,6 +15,7 @@ export const relations = {
   nurseIds: '护理分类', ruleIds: '关联规则',
 }
 export const actions = {
+  PROVENANCE_SEPARATED: '分离知识出处与正文',
   AI_REVIEW: 'AI 预审核', CLASSIFIED: '资料分类', CREATED: '创建', UPDATED: '更新', CAPTURED: '采集入库', PARSED: '模型解析', EDITED: '保存草稿',
   PENDING: '提交人工审核', APPROVED: '审核通过', RETURNED: '审核退回', SYNC_STARTED: '发起同步',
   SYNC_POSTING: '请求新增知识', SYNC_CREATED: '取得业务主键', SYNC_UPLOADED: '上传 PDF',

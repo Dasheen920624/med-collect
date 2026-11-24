@@ -70,6 +70,7 @@ class BusinessKnowledge {
 
     Plan plan(Knowledge draft, Material material, String selectedId) {
         var schema = workflow.schema(draft);
+        requireDestination(draft, schema.category());
         String doi = firstDoi(material.externalRef(), material.sourceUrl(), material.fetchedUrl());
         var candidates = candidates(draft, material, schema.category(), doi);
         var selected = candidates.stream().filter(item -> item.id().equals(selectedId)).findFirst().orElse(null);
@@ -112,6 +113,7 @@ class BusinessKnowledge {
     Plan manualPlan(Knowledge draft, Material material, String targetId) {
         String id = BusinessLiterature.key(targetId);
         var schema = workflow.schema(draft);
+        requireDestination(draft, schema.category());
         if (draft.updateTargetId() != null && !id.equals(draft.updateTargetId())) throw conflict("修订稿须沿用已关联的业务主键");
         if ("4.23 知识管理".equals(material.sourceName()) && trim(material.externalRef()).startsWith("CDSS:" + schema.category().type() + ":")
                 && !material.externalRef().startsWith("CDSS:" + schema.category().type() + ":" + id + ":")) {
@@ -254,16 +256,20 @@ class BusinessKnowledge {
         incoming.path("content").fields().forEachRemaining(entry -> {
             String key = entry.getKey();
             JsonNode old = oldValues.path(key);
-            if (sameValue(key, old, entry.getValue())) return;
+            JsonNode next = entry.getValue();
+            if (REFERENCES.equals(key) && !valueText(old).isBlank()) {
+                next = json.getNodeFactory().textNode(mergeReferences(valueText(old),valueText(next)));
+            }
+            if (sameValue(key, old, next)) return;
             if (old instanceof ObjectNode wrapped && wrapped.path("content").isTextual()) {
-                values.set(key, wrapped.deepCopy().set("content", entry.getValue()));
+                values.set(key, wrapped.deepCopy().set("content", next));
             } else {
-                values.set(key, entry.getValue());
+                values.set(key, next);
             }
             ensureField(merged, incoming, key);
             String label = schema.fields().stream().filter(field -> field.id().equals(key)).map(KnowledgeTemplates.Field::label)
                     .findFirst().orElse("abstract".equals(key) ? "摘要" : key);
-            changes.add(new Difference(label, differenceText(old), differenceText(entry.getValue())));
+            changes.add(new Difference(label, differenceText(old), differenceText(next)));
         });
         var relationChanges = new LinkedHashMap<String, List<String>>();
         workflow.relations(draft).forEach((key, value) -> {
@@ -277,7 +283,9 @@ class BusinessKnowledge {
         if (attach) {
             changes.add(new Difference("PDF 原件", "现有附件保留", material.fileName() + " · SHA-256 " + material.sha256()));
         }
-        if (!changes.isEmpty() && !target.collectorCreated()) {
+        boolean missingClass = original.path("knowledgeClass").asText("").isBlank();
+        if (missingClass) changes.add(new Difference("业务类别", "4.23 未分类", "仅供对照"));
+        if (missingClass || (!changes.isEmpty() && !target.collectorCreated())) {
             return new Plan(Operation.REFERENCE_ONLY, doi, target, candidates, List.copyOf(changes),
                     original, fingerprint(original), Map.of(), false);
         }
@@ -309,6 +317,16 @@ class BusinessKnowledge {
         attachments.sort(Comparator.comparing(itemNode -> itemNode.path("path").asText() + "\n" + itemNode.path("id").asText()));
         state.putArray("attachments").addAll(attachments);
         return state;
+    }
+
+    void requireDestination(Knowledge draft, KnowledgeTemplates.Category category) {
+        if (!templates.liveDestination(category, draft.knowledgeClass()))
+            throw conflict("4.23 未开放该知识入口或有效类别，请先核对类型与类别字典");
+    }
+
+    boolean targetCategory(JsonNode item, Knowledge draft, KnowledgeTemplates.Category category) {
+        return !trim(draft.knowledgeClass()).isBlank() && trim(draft.knowledgeClass()).equals(item.path("knowledgeClass").asText(""))
+                && inScope(item, draft, category);
     }
 
     boolean matchesUpdate(Plan plan, ObjectNode current, String draftId, boolean ignoreReferences) {
@@ -381,7 +399,8 @@ class BusinessKnowledge {
         String remote = actual.path("id").asText();
         String expectedClass = plan != null && plan.before() != null ? plan.before().path("knowledgeClass").asText("") : trim(draft.knowledgeClass());
         return new Receipt(remote, cdss.previewUrl(remote), actual.path("type").asText(), actual.path("childType").asText(""),
-                actual.path("knowledgeClass").asText(""), inScope(actual,draft,schema.category()) && expectedClass.equals(actual.path("knowledgeClass").asText("")),
+                actual.path("knowledgeClass").asText(""), targetCategory(actual,draft,schema.category()) && expectedClass.equals(actual.path("knowledgeClass").asText(""))
+                        && templates.liveDestination(schema.category(),draft.knowledgeClass()),
                 (plan != null ? plan.form().getOrDefault("name",draft.title()) : draft.title()).equals(actual.path("name").asText()), body != null && desired.hasNonNull(key)
                         && sameValue(key, desired.path(key), body.path("content").path(key)),
                 material.pdf() ? hasOriginal(actual, material) : null);
@@ -416,13 +435,18 @@ class BusinessKnowledge {
         String oldReferences = valueText(expected.path("content").path(REFERENCES));
         String newReferences = valueText(actual.path("content").path(REFERENCES));
         if (oldReferences.isBlank() || newReferences.contains(oldReferences)) return null;
-        List<String> newEntries = referenceEntries(newReferences);
-        List<String> missing = referenceEntries(oldReferences).stream()
-                .filter(entry -> newEntries.stream().noneMatch(present -> sameValue(REFERENCES,
-                        json.getNodeFactory().textNode(entry), json.getNodeFactory().textNode(present)))).toList();
-        if (missing.isEmpty()) return null;
-        actual.withObjectProperty("content").put(REFERENCES, newReferences + String.join("", missing));
+        String merged = mergeReferences(newReferences, oldReferences);
+        if (merged.equals(newReferences)) return null;
+        actual.withObjectProperty("content").put(REFERENCES, merged);
         return actual.toString();
+    }
+
+    private String mergeReferences(String existing, String incoming) {
+        List<String> entries = referenceEntries(existing);
+        List<String> missing = referenceEntries(incoming).stream()
+                .filter(entry -> entries.stream().noneMatch(present -> sameValue(REFERENCES,
+                        json.getNodeFactory().textNode(entry), json.getNodeFactory().textNode(present)))).toList();
+        return existing + String.join("", missing);
     }
 
     Map<String, String> createForm(Knowledge draft, Material material, KnowledgeTemplates.Schema schema) {
@@ -548,10 +572,6 @@ class BusinessKnowledge {
 
     private boolean sameValue(String field, JsonNode left, JsonNode right) {
         if (left.equals(right)) return true;
-        if ("laiyuan".equals(field)) {
-            String doi = firstDoi(valueText(left));
-            if (!doi.isBlank() && doi.equals(firstDoi(valueText(right)))) return true;
-        }
         return display(left).equals(display(right)) && links(left).equals(links(right)) && structure(left).equals(structure(right));
     }
 

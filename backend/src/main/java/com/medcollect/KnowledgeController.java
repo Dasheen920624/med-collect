@@ -53,8 +53,9 @@ class KnowledgeController {
                              @RequestParam(required = false) KnowledgeStatus status,
                              @RequestParam(required = false) String materialId, @RequestParam(required = false) String human,
                              @RequestParam(required = false) String sync, @RequestParam(required = false) String subjectId,
+                             @RequestParam(required = false) String submission, @RequestParam(required = false) String publication,
                              @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
-        return workflow.list(query, status, materialId, human, sync, subjectId, page, size);
+        return workflow.list(query, status, materialId, human, sync, subjectId, submission, publication, page, size);
     }
 
     @GetMapping("/knowledge/{id}")
@@ -65,7 +66,7 @@ class KnowledgeController {
         result.put("knowledge", knowledge);
         result.put("material", new MaterialList(original.id(), original.title(),
                         original.formatCode(), original.fileName(), original.sourceUrl(), original.sourceName(),
-                        original.capturedAt(), original.status()));
+                        original.capturedAt(), original.status(), original.fetchedUrl(), KnowledgeText.citation(original)));
         result.put("events", store.events("KNOWLEDGE", id));
         var draft = store.knowledge(id);
         result.put("syncReview", reviews.preview(draft));

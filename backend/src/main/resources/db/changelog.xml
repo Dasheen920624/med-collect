@@ -11,4 +11,5 @@
   <include file="007-business-catalog.xml" relativeToChangelogFile="true"/>
   <include file="008-material-removal.sql" relativeToChangelogFile="true"/>
   <include file="009-sync-origin.xml" relativeToChangelogFile="true"/>
+  <include file="010-review-publication.sql" relativeToChangelogFile="true"/>
 </databaseChangeLog>

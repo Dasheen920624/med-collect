@@ -33,6 +33,7 @@ function go(value) {
   page.value=next
   viewport.value?.scrollTo(0,0)
 }
+defineExpose({go})
 </script>
 <template>
   <section class="pdf-reader" aria-label="PDF 原文阅读器">

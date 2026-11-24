@@ -132,6 +132,8 @@ class WorkflowIntegrationTest {
         assertThat(original.getFileName().toString()).isEqualTo("original.pdf");
         assertThat(Files.readAllBytes(original)).isEqualTo(pdf);
         assertThat(Files.exists(original.resolveSibling("extracted.txt"))).isFalse();
+        assertThat(getBody("/api/materials/"+material+"/pdf-preview/locate?q=sentence").path("page").asInt()).isOne();
+        assertThat(getBody("/api/materials/"+material+"/pdf-preview/locate?q=absent").path("page").asInt()).isZero();
         var download = mvc.perform(get("/api/materials/{id}/original", material).with(user("reviewer").roles("REVIEWER")))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         assertThat(download).isEqualTo(pdf);
@@ -244,6 +246,12 @@ class WorkflowIntegrationTest {
                 .with(user("reviewer").roles("REVIEWER")).with(csrf())).andExpect(status().isConflict());
         approve(endpoint, compared);
         int updates = UPDATES.get();
+        original.remove("knowledgeClass");
+        postBody(endpoint + "/sync", Map.of("revision", currentRevision(endpoint)));
+        assertThat(await(endpoint,"knowledge","PENDING").path("syncError").asText()).contains("类别");
+        assertThat(UPDATES.get()).isEqualTo(updates);
+        original.put("knowledgeClass","17");
+        approve(endpoint, postBody(endpoint + "/sync-review", Map.of("revision", currentRevision(endpoint),"targetId",target)));
         original.put("modifyTime", "4.23 changed after approval");
         postBody(endpoint + "/sync", Map.of("revision", currentRevision(endpoint)));
         JsonNode stale = await(endpoint, "knowledge", "PENDING");
@@ -724,6 +732,18 @@ class WorkflowIntegrationTest {
     }
 
     @Test
+    void keepsTaskCreatorAndFiltersUnlimitedDownloadsByDocumentType() throws Exception {
+        var task = adminPost("/api/tasks",Map.of("name","分类下载回归","mode","URL","queryText",base()+"/source-filter",
+                "enabled",true,"captureMode","SINGLE","resultLimit",0,"materialTypeIds",List.of("material-guideline")));
+        String endpoint="/api/tasks/"+task.path("id").asText();
+        assertThat(getBody(endpoint).path("materialTypeIds").get(0).asText()).isEqualTo("material-guideline");
+        String run=adminPost(endpoint+"/runs",null).path("id").asText();
+        await("/api/runs/"+run,"run","SUCCEEDED");
+        assertThat(getBody("/api/runs/"+run).path("results").get(0).path("status").asText()).isEqualTo("FILTERED");
+        assertThat(getBody("/api/tasks?query=分类下载回归").path("rows").get(0).path("createdBy").asText()).isEqualTo(task.path("createdBy").asText()).isNotBlank();
+    }
+
+    @Test
     void synchronizesReferenceDataAndVerifiesBusinessSelections() throws Exception {
         mvc.perform(post("/api/business-catalog/refresh").with(user("reader").roles("REVIEWER")).with(csrf()))
                 .andExpect(status().isForbidden());
@@ -832,6 +852,33 @@ class WorkflowIntegrationTest {
             document.save(output);
             return output.toByteArray();
         }
+    }
+
+    @Test
+    void separatesEvidenceAndMedicalTextAndBlocksARemovedBusinessClass() throws Exception {
+        String sourceUrl = "https://example.org/provenance-manual";
+        var upload = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file","manual.txt",
+                "text/plain","Clinical text".getBytes(StandardCharsets.UTF_8))).param("title","示例项目")
+                .param("sourceUrl",sourceUrl).param("sourceName","医院甲").with(user("collector").roles("ADMIN")).with(csrf())));
+        String material = "/api/materials/"+upload.path("materialId").asText();
+        String citation = "补充出处：医院乙《实验室资料》 https://example.org/original";
+        postBody(material+"/decision", Map.of("revision",1,"approved",true,"sourceAbstract","医院甲《示例项目》记载，限指定方法。\n\n"+citation));
+        var draft = postBody(material+"/drafts",Map.of("typeCode","8-1","knowledgeClass","08","useAi",false));
+        assertThat(draft.path("summary").asText()).isEqualTo("限指定方法。");
+        assertThat(draft.path("fields").path("laiyuan").asText()).contains("《示例项目》",citation);
+        String endpoint = "/api/knowledge/"+draft.path("id").asText();
+        var k = store.knowledge(draft.path("id").asText());
+        var cdssContent = json.readTree(business.createForm(k,store.material(k.materialId()),workflow.schema(k)).get("content")).path("content");
+        assertThat(cdssContent.path("laiyuan").asText()).contains(sourceUrl,"医院乙");
+        assertThat(cdssContent.path("summary").asText()).doesNotContain("医院","https://");
+        assertThat(getBody("/api/materials?query=示例项目&parseState=COMPLETED").path("rows").get(0).path("generatedTypes").toString()).contains("8-1");
+        var pending=postBody(endpoint+"/submit",Map.of("revision",k.revision()));
+        var plan=postBody(endpoint+"/sync-review",Map.of("revision",pending.path("revision").asInt()));
+        assertThat(getBody("/api/knowledge?query=示例项目&submission=SUBMITTED&publication=UNPUBLISHED").path("total").asInt()).isOne();
+        referenceFailure=true;
+        try {
+            expectConflict(endpoint+"/decision",Map.of("revision",currentRevision(endpoint),"approved",true,"reviewId",plan.path("id").asText()));
+        } finally { referenceFailure=false; }
     }
 
     @Test

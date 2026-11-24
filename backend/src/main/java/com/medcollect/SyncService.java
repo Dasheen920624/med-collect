@@ -78,12 +78,16 @@ class SyncService {
             var schema = workflow.schema(knowledge);
             var approval = reviews.approved(id).orElse(null);
             requireWriteAuthority(knowledge, approval);
+            if (!templates.liveDestination(schema.category(), knowledge.knowledgeClass())) {
+                categoryChanged(knowledge);
+            }
             if (approval != null && approval.plan().target() != null) {
                 syncMatched(knowledge, material, schema, approval, token, actor);
                 return;
             }
             String remoteId = knowledge.remoteId();
             if (remoteId == null) remoteId = saveRecord(knowledge, material, schema, token, actor);
+            else if (!business.targetCategory(business.snapshot(remoteId,schema.category()), knowledge, schema.category())) categoryChanged(knowledge);
             if (material.pdf()) syncPdf(owned(id, token), material, remoteId, token, actor);
             ObjectNode actual = business.snapshot(remoteId, schema.category());
             business.verifyCreated(knowledge, material, actual, true);
@@ -101,6 +105,12 @@ class SyncService {
             try { reviews.releaseWriter(token); }
             catch (RuntimeException e) { log.warn("Could not release the knowledge sync lease", e); }
         }
+    }
+
+    private void categoryChanged(Knowledge knowledge) {
+        String message = "4.23 业务入口或知识类别已失效，请核对业务分类";
+        if (knowledge.syncPhase() != null) throw new CdssClient.RemoteFailure(message + "及已有写入回执");
+        throw new BusinessKnowledge.ReviewChanged(message + "并重新审核");
     }
 
     private void requireWriteAuthority(Knowledge draft, SyncReviews.Approved approval) {
@@ -163,6 +173,7 @@ class SyncService {
             throw new CdssClient.RemoteFailure("该业务记录有未完成的同步，请先核对并恢复该操作");
         }
         ObjectNode current = business.snapshot(remoteId, schema.category());
+        if (!business.targetCategory(current, knowledge, schema.category())) categoryChanged(knowledge);
         if (knowledge.syncPhase() == null && !plan.baseline().equals(BusinessKnowledge.fingerprint(current))) {
             throw new BusinessKnowledge.ReviewChanged("4.23 原业务记录在审核后发生变化，请重新对比并审核");
         }
@@ -170,7 +181,7 @@ class SyncService {
             if (!business.receipt(knowledge,material,current,plan).verified()) {
                 throw new BusinessKnowledge.ReviewChanged("4.23 正文或原件与审核时不同，请重新查重并审核");
             }
-            complete(id, token, actor, remoteId, approval, null, true);
+            complete(id, token, actor, remoteId, approval, current, true);
             return;
         }
         origins.requireOwned(remoteId);
@@ -241,6 +252,8 @@ class SyncService {
         Knowledge draft = store.knowledge(id);
         if (draft.remoteId() == null || draft.status() != KnowledgeStatus.SYNCED) throw conflict("该稿件尚无已完成的业务同步回执");
         var current = business.snapshot(draft.remoteId(),workflow.schema(draft).category());
+        store.db().sql("UPDATE mc_knowledge SET business_release = :state WHERE remote_id = :remote AND status = 'SYNCED'")
+                .param("state", current.path("releaseStatus").asText(null), Types.VARCHAR).param("remote",draft.remoteId()).update();
         return business.receipt(draft,store.material(draft.materialId()),current,reviews.approved(id).map(SyncReviews.Approved::plan).orElse(null));
     }
 
@@ -304,11 +317,12 @@ class SyncService {
                           ObjectNode actual, boolean skipped) {
         transactions.executeWithoutResult(tx -> {
             changed(store.db().sql("""
-                    UPDATE mc_knowledge SET status = 'SYNCED', remote_id = :remote,
+                    UPDATE mc_knowledge SET status = 'SYNCED', remote_id = :remote, business_release = :release,
                       sync_phase = CASE WHEN :skip = 1 THEN 'SKIPPED' ELSE sync_phase END,
                       sync_lease = NULL, sync_token = NULL, sync_error = NULL, revision = revision + 1, updated_at = :now
                     WHERE id = :id AND status = 'SYNCING' AND sync_token = :token
-                    """).param("id", id).param("remote", remoteId).param("skip", skipped ? 1 : 0).param("now", store.now())
+                    """).param("id", id).param("remote", remoteId).param("release",actual.path("releaseStatus").asText(null), Types.VARCHAR)
+                    .param("skip", skipped ? 1 : 0).param("now", store.now())
                     .param("token", token).update());
             if (approval != null && !skipped) reviews.recordVersion(id, remoteId, approval, actual);
             store.event("KNOWLEDGE", id, skipped ? "SYNC_SKIPPED" : "SYNCED", actor, remoteId);

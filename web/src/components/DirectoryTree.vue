@@ -32,6 +32,7 @@ watch(() => [props.selected, props.nodes], () => {
       <div v-if="search || !closed.includes(root.id)" class="tree-children"><button v-for="n in children(root.id).filter(n => matches(root) || matches(n))"
         :key="n.id" class="tree-entry" :class="{chosen:selected===n.id}" @click="emit('select',n.id)">{{ n.name }}<small>{{ n.materialCount }}</small></button></div>
     </div>
+    <slot name="footer"></slot>
     <button v-if="unassigned" class="tree-entry" :class="{chosen:selected==='unassigned'}" @click="emit('select','unassigned')">未关联学科</button>
   </aside>
 </template>

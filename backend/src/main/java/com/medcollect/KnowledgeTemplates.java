@@ -94,7 +94,10 @@ class KnowledgeTemplates {
     List<Category> categories() {
         var current = catalog.current();
         if (current == null && !cdss.configured()) return CATEGORIES;
-        var kinds = current==null ? initialKinds() : current.kinds();
+        return categories(current==null ? initialKinds() : current.kinds());
+    }
+
+    private List<Category> categories(List<BusinessCatalog.Kind> kinds) {
         var result = new LinkedHashMap<String,Category>();
         for (var kind : kinds) {
             for (var c : CATEGORIES) if (c.code().equals(kind.code())) {
@@ -120,6 +123,19 @@ class KnowledgeTemplates {
     void availableForCollection(String code) {
         if (cdss.configured() && categories().stream().noneMatch(c->c.code().equals(code)))
             throw bad("当前业务账号的知识入口中没有这个类型，请刷新业务资料");
+    }
+
+    String draftClass(String code, String selected) {
+        var category = category(code);
+        if (!trim(selected).isBlank() || category.classRequired() || !cdss.configured()) return selected;
+        String root = rootCode(category.classRoot());
+        return classes(code).stream().anyMatch(c -> root.equals(c.code())) ? root : selected;
+    }
+
+    boolean liveDestination(Category category, String classCode) {
+        if (trim(classCode).isBlank() || categories(initialKinds()).stream().noneMatch(c -> c.code().equals(category.code()))) return false;
+        return liveClasses(category.classRoot(), true).stream().anyMatch(c -> c.code().equals(classCode))
+                && (!"24".equals(category.code()) || TCM_CLASSES.stream().anyMatch(c -> c.code().equals(classCode)));
     }
     private String rootCode(String root) {
         return root.length()==1 && Character.isDigit(root.charAt(0)) ? "0"+root : root;
@@ -183,10 +199,17 @@ class KnowledgeTemplates {
         var options = new LinkedHashMap<String, ClassOption>();
         for (JsonNode row : rows) {
             String code = row.path("knowledgeClass").asText();
-            if (!code.isBlank()) options.putIfAbsent(code, new ClassOption(code,
+            if (!code.isBlank() && row.path("validFlag").asInt(1) == 1 && !row.path("knowledgeClassName").asText("").isBlank()) options.putIfAbsent(code, new ClassOption(code,
                     row.path("knowledgeClassName").asText(), row.path("upperClass").asText()));
         }
-        List<ClassOption> result = List.copyOf(options.values());
+        var branch = new java.util.HashSet<String>();
+        branch.add(rootCode(root));
+        boolean expanded;
+        do {
+            expanded = false;
+            for (var option : options.values()) if (branch.contains(option.parent()) && branch.add(option.code())) expanded = true;
+        } while (expanded);
+        List<ClassOption> result = options.values().stream().filter(c -> branch.contains(c.code())).toList();
         classCache.put(root, new Cache<>(result, expires()));
         return result;
     }
@@ -274,25 +297,30 @@ class KnowledgeTemplates {
         }
         var content = layout.putObject("content");
         for (Field field : fields(layout)) {
+            if (KnowledgeText.SOURCE.equals(field.id())) {
+                String citation = KnowledgeText.citation(material);
+                String note = trim(fields.get(KnowledgeText.SOURCE));
+                String html = "<p>" + HtmlUtils.htmlEscape(citation) + "</p>";
+                if (!note.isBlank() && !note.equals(material.sourceUrl())) html += "<p>" + HtmlUtils.htmlEscape(note).replace("\n","<br>") + "</p>";
+                if (!trim(material.sourceUrl()).isBlank()) {
+                    String url = HtmlUtils.htmlEscape(httpUri(material.sourceUrl()).toString());
+                    html += "<p><a href=\"" + url + "\" target=\"_blank\" rel=\"noopener\">" + url + "</a></p>";
+                }
+                content.put(field.id(),html);
+                continue;
+            }
             String value = switch (field.id()) {
                 case "guideType" -> schema.category().name();
                 case "guideAuthor" -> material.authors();
                 case "publishTime" -> material.published();
                 case "organ" -> material.publisher();
-                case "laiyuan" -> material.sourceUrl() == null ? material.sourceName() : material.sourceUrl();
                 default -> null;
             };
             if (!material.pdf() && !trim(fields.get(field.id())).isBlank()) value = fields.get(field.id());
             if (field.id().equals(summaryKey)) value = summary;
             if (trim(value).isBlank()) continue;
-            if (field.id().equals("laiyuan") && value.equals(material.sourceUrl())) {
-                String safeUrl = HtmlUtils.htmlEscape(httpUri(value).toString());
-                content.put(field.id(), "<p><a href=\"" + safeUrl + "\" target=\"_blank\" rel=\"noopener\">"
-                        + safeUrl + "</a></p>");
-            } else {
-                content.put(field.id(), field.property() ? value : "<p>" + HtmlUtils.htmlEscape(value)
-                        .replace("\r\n", "\n").replace("\n", "<br>") + "</p>");
-            }
+            content.put(field.id(), field.property() ? value : "<p>" + HtmlUtils.htmlEscape(value)
+                    .replace("\r\n", "\n").replace("\n", "<br>") + "</p>");
         }
         return layout;
     }

@@ -50,7 +50,7 @@ class KnowledgeWorkflow {
     }
 
     Page<KnowledgeList> list(String query, KnowledgeStatus status, String materialId, String human, String sync,
-                             String subjectId, int page, int size) {
+                             String subjectId, String submission, String publication, int page, int size) {
         Map<String, Object> filters = new HashMap<>();
         String from = "FROM mc_knowledge k JOIN mc_material m ON m.id = k.material_id WHERE 1=1";
         if (!trim(query).isBlank()) {
@@ -66,8 +66,17 @@ class KnowledgeWorkflow {
             filters.put("material", materialId);
         }
         from += Classifications.subjectScope("k.material_id", subjectId, filters);
+        if ("SUBMITTED".equals(submission)) from += " AND k.status <> 'DRAFT'";
+        if ("UNSUBMITTED".equals(submission)) from += " AND k.status = 'DRAFT'";
+        if ("PUBLISHED".equals(publication)) from += " AND k.status = 'SYNCED' AND k.business_release = '1'";
+        if ("UNPUBLISHED".equals(publication)) from += " AND (k.remote_id IS NULL OR k.business_release IN ('0','2'))";
+        if ("UNKNOWN".equals(publication)) from += " AND k.remote_id IS NOT NULL AND k.business_release IS NULL";
         if ("EDITABLE".equals(human)) {
             from += " AND k.status IN ('DRAFT','RETURNED')";
+        } else if ("REVIEWED".equals(human)) {
+            from += " AND k.status IN ('APPROVED','SYNCING','SYNC_FAILED','SYNCED','RETURNED')";
+        } else if ("UNREVIEWED".equals(human)) {
+            from += " AND k.status IN ('PENDING','DRAFT','REFERENCE_ONLY')";
         } else if (!trim(human).isBlank()) {
             from += " AND (CASE WHEN k.status IN ('DRAFT','PENDING','RETURNED','REFERENCE_ONLY') THEN k.status ELSE 'APPROVED' END) = :human";
             filters.put("human", human);
@@ -80,7 +89,7 @@ class KnowledgeWorkflow {
             filters.put("sync", sync);
         }
         String columns = """
-                k.id, k.material_id, m.title material_title, k.title, k.type_code, k.status, k.updated_at, k.remote_id, k.sync_phase,
+                k.id, k.material_id, m.title material_title, k.title, k.type_code, k.status, k.updated_at, k.remote_id, k.sync_phase, k.business_release,
                 (SELECT e.actor FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
                   AND e.action IN ('APPROVED','RETURNED') ORDER BY e.occurred_at DESC, e.id DESC FETCH FIRST 1 ROW ONLY) reviewer,
                 (SELECT MAX(e.occurred_at) FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
@@ -101,12 +110,32 @@ class KnowledgeWorkflow {
         requireSource(material,request.typeCode());
         if (material.status() != MaterialStatus.APPROVED) throw conflict("请先完成原文审核");
         templates.availableForCollection(request.typeCode());
-        var schema = templates.schema(request.typeCode(), request.knowledgeClass());
+        var schema = templates.draftSchema(request.typeCode(), request.knowledgeClass());
         String id = request.requestId() == null ? id() : request.requestId().toString();
         if (request.requestId() != null) {
             Detail existing = existingDraft(id, materialId, schema, request.useAi());
             if (existing != null) return existing;
         }
+        String attempt = id();
+        store.db().sql("INSERT INTO mc_parse_attempt (id,material_id,state,started_at) VALUES (:id,:material,'RUNNING',:now)")
+                .param("id",attempt).param("material",materialId).param("now",store.now()).update();
+        try {
+            Detail result = generate(material,request,schema,id,actor);
+            finishParse(attempt,"COMPLETED");
+            return result;
+        } catch (RuntimeException e) {
+            finishParse(attempt,"FAILED");
+            throw e;
+        }
+    }
+
+    private void finishParse(String attempt,String state) {
+        store.db().sql("UPDATE mc_parse_attempt SET state=:state, finished_at=:now WHERE id=:id")
+                .param("state",state).param("now",store.now()).param("id",attempt).update();
+    }
+
+    private Detail generate(Material material,DraftInput request,KnowledgeTemplates.Schema schema,String id,String actor) {
+        String materialId = material.id();
         String title = limit(material.title(), 100);
         String summary = material.sourceAbstract();
         String modelName = null;
@@ -122,11 +151,12 @@ class KnowledgeWorkflow {
             modelName = result.model();
             fields = result.fields();
         }
+        var text = KnowledgeText.separate(summary, fields, material);
         long now = store.now();
         var params = new MapSqlParameterSource().addValue("id", id).addValue("material", materialId)
                 .addValue("title", title).addValue("type", schema.category().code())
-                .addValue("class", schema.knowledgeClass(), Types.VARCHAR).addValue("summary", summary, Types.CLOB)
-                .addValue("schema", model.write(schema), Types.CLOB).addValue("fields", model.write(fields), Types.CLOB)
+                .addValue("class", schema.knowledgeClass(), Types.VARCHAR).addValue("summary", text.summary(), Types.CLOB)
+                .addValue("schema", model.write(schema), Types.CLOB).addValue("fields", model.write(text.fields()), Types.CLOB)
                 .addValue("relations", "15_11".equals(request.typeCode()) ? "{\"nurseIds\":[\"11\"]}" : "{}", Types.CLOB)
                 .addValue("model", modelName, Types.VARCHAR).addValue("now", now);
         String usedModel = modelName;
@@ -176,17 +206,24 @@ class KnowledgeWorkflow {
     Detail edit(String id, DraftEdit input, String actor) {
         Knowledge knowledge = store.knowledge(id);
         Material material = store.material(knowledge.materialId());
-        Map<String, String> cleanFields = validateFields(material, schema(knowledge),
+        var selectedSchema = schema(knowledge);
+        if (input.knowledgeClass() != null && !trim(knowledge.knowledgeClass()).equals(trim(input.knowledgeClass()))) {
+            if (knowledge.updateTargetId() != null) throw conflict("修订稿须沿用原业务知识类别");
+            selectedSchema = templates.schema(knowledge.typeCode(), requireText(input.knowledgeClass(),"请选择知识类别"));
+        }
+        Map<String, String> cleanFields = validateFields(material, selectedSchema,
                 input.fields() == null ? Map.of() : input.fields());
-        var cleanRelations = validateRelations(schema(knowledge).category(),
+        var text = KnowledgeText.separate(input.summary(), cleanFields, material);
+        var cleanRelations = validateRelations(selectedSchema.category(),
                 input.relations() == null ? Map.of() : input.relations());
-        if (cdss.configured()) dictionaries.validate(schema(knowledge),cleanFields,cleanRelations,false);
+        if (cdss.configured()) dictionaries.validate(selectedSchema,cleanFields,cleanRelations,false);
         changed(store.db().sql("""
                 UPDATE mc_knowledge SET title = :title, summary = :summary, fields_json = :fields,
-                  relations_json = :relations, revision = revision + 1, updated_at = :now
+                  knowledge_class = :classCode, template_json = :schema, relations_json = :relations, revision = revision + 1, updated_at = :now
                 WHERE id = :id AND revision = :revision AND status IN ('DRAFT', 'RETURNED')
-                """).param("title", input.title().strip()).param("summary", trim(input.summary()), Types.CLOB)
-                .param("fields", model.write(cleanFields), Types.CLOB).param("relations", model.write(cleanRelations), Types.CLOB)
+                """).param("title", input.title().strip()).param("summary", text.summary(), Types.CLOB)
+                .param("fields", model.write(text.fields()), Types.CLOB).param("relations", model.write(cleanRelations), Types.CLOB)
+                .param("classCode",selectedSchema.knowledgeClass(),Types.VARCHAR).param("schema",model.write(selectedSchema),Types.CLOB)
                 .param("now", store.now()).param("id", id).param("revision", input.revision()).update());
         store.event("KNOWLEDGE", id, "EDITED", actor, null);
         return detail(id);
@@ -297,10 +334,10 @@ class KnowledgeWorkflow {
     }
 
     private Map<String, String> validateFields(Material material, KnowledgeTemplates.Schema schema, Map<String, String> fields) {
-        if (material.pdf()) return Map.of();
         var accepted = new LinkedHashMap<String, String>();
         for (var field : schema.fields()) {
             if (field.id().equals(schema.summaryKey())) continue;
+            if (material.pdf() && !KnowledgeText.SOURCE.equals(field.id())) continue;
             String value = trim(fields.get(field.id()));
             if (value.length() > 12000) throw bad(field.label() + "超过 12000 字符");
             if (!value.isBlank()) accepted.put(field.id(), value);

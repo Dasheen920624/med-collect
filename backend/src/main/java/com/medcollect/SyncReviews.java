@@ -61,15 +61,20 @@ class SyncReviews {
         Knowledge draft = store.knowledge(id);
         requireReviewable(draft, revision);
         if (!cdss.configured()) throw conflict("请配置 4.23 业务账号后查重");
+        var material = store.material(draft.materialId());
+        var previousFields = workflow.fields(draft);
+        var text = KnowledgeText.separate(draft.summary(),previousFields,material);
+        requireText(text.summary(),"摘要只包含出处，请退回补充医学正文后再查重");
+        boolean separated = !text.summary().equals(trim(draft.summary())) || !text.fields().equals(previousFields);
+        var proposed = separated ? draft.withText(text.summary(),write(text.fields())) : draft;
         BusinessKnowledge.Plan plan;
         try {
-            var material = store.material(draft.materialId());
             if (draft.status() == KnowledgeStatus.REFERENCE_ONLY && trim(targetId).isBlank()) {
                 var previous = review(id).map(row -> readPlan(row.planJson())).orElseThrow(() -> conflict("请重新选择业务对照记录"));
                 targetId = previous.target().id();
                 manual = "人工指定同类业务知识".equals(previous.target().basis());
             }
-            plan = manual ? business.manualPlan(draft,material,targetId) : business.plan(draft,material,targetId);
+            plan = manual ? business.manualPlan(proposed,material,targetId) : business.plan(proposed,material,targetId);
         } catch (CdssClient.RemoteFailure e) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage(), e);
         }
@@ -78,6 +83,12 @@ class SyncReviews {
             Knowledge current = store.knowledge(id);
             requireReviewable(current, revision);
             int nextRevision = revision + 1;
+            if (separated) {
+                changed(store.db().sql("UPDATE mc_knowledge SET summary=:body, fields_json=:fields WHERE id=:id AND revision=:revision")
+                        .param("body",proposed.summary(),Types.CLOB).param("fields",proposed.fieldsJson(),Types.CLOB)
+                        .param("id",id).param("revision",revision).update());
+                store.event("KNOWLEDGE",id,"PROVENANCE_SEPARATED",actor,"采集来源、知识出处与医学正文分栏");
+            }
             changed(store.db().sql("""
                     UPDATE mc_knowledge SET status = :status, revision = :next, sync_error = NULL, updated_at = :now
                     WHERE id = :id AND revision = :revision
@@ -105,6 +116,11 @@ class SyncReviews {
             var plan = readPlan(review.planJson());
             if (plan.operation() == REFERENCE_ONLY) throw conflict(SyncOrigins.PROTECTED);
             if (plan.operation() == UPDATE) origins.requireOwned(plan.target().id());
+            Knowledge current = store.knowledge(id);
+            var category = workflow.schema(current).category();
+            business.requireDestination(current,category);
+            if (plan.target() != null && !business.targetCategory(cdss.knowledge(plan.target().id()),current,category))
+                throw conflict("4.23 目标的类别已变更，请重新查重");
             if (!review.reviewId().equals(input.reviewId()) || review.draftRevision() != input.revision()
                     || review.approvedAt() != null || plan.operation() == CHOOSE) {
                 throw conflict("请核对当前查重结果并明确选择业务记录后再审批");
@@ -154,14 +170,21 @@ class SyncReviews {
                 """).param("target", original.remoteId())
                 .query(String.class).optional();
         if (existing.isPresent()) return workflow.detail(existing.get());
+        Knowledge previous = store.knowledge(latest);
+        var category = workflow.schema(previous).category();
+        business.requireDestination(previous,category);
+        if (!business.targetCategory(cdss.knowledge(original.remoteId()), previous, category))
+            throw conflict("4.23 目标的类别已变更，请先核对业务知识");
+        var text = KnowledgeText.separate(previous.summary(),workflow.fields(previous),store.material(previous.materialId()));
         String draft = id();
         String nextTitle = approved(latest).map(a -> a.plan().form().get("name")).orElse(store.knowledge(latest).title());
         changed(store.db().sql("""
                 INSERT INTO mc_knowledge (id, material_id, title, type_code, knowledge_class, summary, template_json,
                     fields_json, relations_json, status, revision, model_name, created_at, updated_at, update_target_id)
-                SELECT :draft, material_id, :title, type_code, knowledge_class, summary, template_json, fields_json,
+                SELECT :draft, material_id, :title, type_code, knowledge_class, :summary, template_json, :fields,
                     relations_json, 'DRAFT', 1, model_name, :now, :now, remote_id FROM mc_knowledge WHERE id = :id
-                """).param("draft", draft).param("title",nextTitle).param("id", latest).param("now", store.now()).update());
+                """).param("draft", draft).param("title",nextTitle).param("summary",text.summary(),Types.CLOB)
+                .param("fields",write(text.fields()),Types.CLOB).param("id", latest).param("now", store.now()).update());
         store.event("KNOWLEDGE", draft, "REVISION_CREATED", actor, original.remoteId());
         return workflow.detail(draft);
     }

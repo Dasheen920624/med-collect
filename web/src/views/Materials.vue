@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { Download, ExternalLink, FileText, Search, Sparkles, Upload } from '@lucide/vue'
 import { api, list, original, send } from '../api'
 import { date, dateRange, materialStates, modes, selection, size } from '../labels'
@@ -32,7 +32,8 @@ async function removeMaterial() {
 }
 const table = ref({ rows: [], total: 0, page: 1, size: 10 })
 const freshFilters = () => ({ query: '', status: '', format: '', classId: '', originalsOnly: false,
-  domainId: '', materialTypeId: '', acquireMode: '', parsed: '', from: '', until: '' })
+  domainId: '', materialTypeId: '', acquireMode: '', parsed: '', parseState:'', from: '', until: '' })
+const parseStates = { UNPARSED:'未解析', RUNNING:'处理中', COMPLETED:'已完成', CHECK:'需核对', FAILED:'失败' }
 const filters = ref(freshFilters())
 const pageSize = ref(10)
 const parseFocus = ref(false)
@@ -114,6 +115,16 @@ async function saveClassifications() {
   finally { busy.value = false }
 }
 
+async function showUnlinked() {
+  const parent = groupNodes('SUBJECT').find(n=>n.id===props.subjectId)?.parentId
+  if (parent || props.subjectId==='unassigned') {
+    emit('scope',parent || '')
+    await nextTick()
+  }
+  filters.value.classId='unlinked'
+  await load()
+}
+
 async function load(page = 1) {
   const seq = ++request
   loading.value = true
@@ -165,7 +176,12 @@ async function chooseType() {
   if (!code) return
   try {
     const options = await api('/categories/' + code + '/classes')
-    if (chosen.value.typeCode === code) classes.value = options
+    if (chosen.value.typeCode === code) {
+      classes.value = options
+      const category = categories.value.find(c=>c.code===code)
+      const root = category?.classRoot?.padStart(2,'0')
+      if (!category?.classRequired && options.some(c=>c.code===root)) chosen.value.knowledgeClass=root
+    }
   } catch (e) { panelError.value = e.message }
 }
 
@@ -263,21 +279,22 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
 
 <template>
   <section class="page-head">
-    <h1>{{ parseOnly ? '文献解析' : '文献原文库' }}</h1>
+    <h1>{{ parseOnly ? '静态知识解析' : '文献原文管理' }}</h1>
     <div v-if="!parseOnly" class="actions"><button class="button secondary" :disabled="!selectedRows.length" @click="editClassifications(selectedRows)">批量分类</button>
       <button v-if="session.admin" class="button primary" @click="openUpload()"><Upload :size="16" /> 手工上传</button></div>
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
   <div :class="{ 'directory-layout': !parseOnly }">
-    <DirectoryTree v-if="!parseOnly" title="学科与疾病" all-label="全部原文" :nodes="groupNodes('SUBJECT')" :selected="subjectId" unassigned @select="emit('scope',$event)">
+    <DirectoryTree v-if="!parseOnly" title="学科与疾病" all-label="全部原文" :nodes="groupNodes('SUBJECT')" :selected="filters.classId==='unlinked' ? 'unlinked' : subjectId" unassigned @select="filters.classId=''; emit('scope',$event); load()">
       <button class="link" @click="emit('navigate','classifications')">目录维护</button>
+      <template #footer><button class="tree-entry" :class="{chosen:filters.classId==='unlinked'}" @click="showUnlinked">未关联病种</button></template>
     </DirectoryTree>
     <section class="panel">
       <form class="filters" @submit.prevent="load()">
         <label class="search"><Search :size="15" /><input v-model.trim="filters.query" maxlength="400" aria-label="检索原文" placeholder="搜索资料名称、来源或 DOI" /></label>
         <select v-model="filters.materialTypeId" aria-label="资料类型"><option value="">全部资料类型</option><option v-for="n in groupNodes('MATERIAL')" :key="n.id" :value="n.id">{{ n.name }}</option></select>
         <select v-model="filters.domainId" aria-label="知识类别"><option value="">全部知识类别</option><option v-for="n in groupNodes('DOMAIN')" :key="n.id" :value="n.id">{{ classPath(n) }}</option></select>
-        <select v-if="parseOnly" v-model="filters.parsed" aria-label="解析状态"><option value="">全部解析状态</option><option value="false">未解析</option><option value="true">已解析</option></select>
+        <select v-if="parseOnly" v-model="filters.parseState" aria-label="解析状态" @change="filters.parsed=''"><option value="">--请选择状态--</option><option v-for="(label,key) in parseStates" :key="key" :value="key">{{ label }}</option></select>
         <template v-else><select v-model="filters.format" aria-label="文件格式"><option value="">全部文件格式</option><option v-for="f in formats" :key="f">{{ f }}</option></select>
           <select v-model="filters.acquireMode" aria-label="获取方式"><option value="">全部获取方式</option><option v-for="(name,k) in modes" :key="k" :value="k">{{ name }}</option></select>
           <label class="filter-field">采集时间<input v-model="filters.from" aria-label="采集开始日期" type="date" :max="filters.until" /></label>
@@ -293,32 +310,32 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
           :indeterminate="selectedRows.length > 0 && selectedRows.length < table.rows.length"
           @change="selectedRows = $event.target.checked ? table.rows.map(r => r.id) : []" /></th>
           <th>序号</th><th>{{ parseOnly ? '原文资料' : '资料名称' }}</th>
-          <template v-if="parseOnly"><th>解析类别</th><th>解析状态</th><th>生成知识</th><th>创建时间</th><th>最近生成</th></template>
-          <template v-else><th>资料类型</th><th>知识类别</th><th>格式</th><th>获取方式</th><th>采集时间</th></template><th>操作</th></tr></thead>
+          <template v-if="parseOnly"><th>解析意图 / 已生成</th><th>解析状态</th><th>生成知识</th><th>更新时间</th></template>
+          <template v-else><th>资料类型</th><th>知识类别</th><th>文件格式</th><th>获取方式</th><th>采集时间</th></template><th>操作</th></tr></thead>
           <tbody><tr v-for="(row,i) in table.rows" :key="row.id">
             <td v-if="!parseOnly"><input type="checkbox" v-model="selectedRows" :value="row.id" :aria-label="'选择 ' + row.title" /></td>
             <td>{{ (table.page-1)*table.size+i+1 }}</td>
             <td><button class="link record-title" @click="openMaterial(row.id)">{{ row.title }}</button>
               <small class="subline">{{ parseOnly ? row.formatCode : (row.sourceName || '') }}</small></td>
-            <template v-if="parseOnly"><td>{{ namesOf(row,'DOMAIN') }}</td><td>{{ row.knowledgeCount ? '已解析' : '未解析' }}
+            <template v-if="parseOnly"><td>解析意图：{{ namesOf(row,'DOMAIN') }}<small class="subline">已生成：{{ row.generatedTypes.map(code=>categories.find(c=>c.code===code)?.name || code).join('、') || '暂无' }}</small></td><td>{{ parseStates[row.parseState] }}
               <small v-if="row.status !== 'APPROVED'" class="subline">{{ materialStates[row.status] }}原文</small></td>
               <td><button v-if="row.knowledgeCount" class="link" @click="emit('navigate','knowledge','material:' + row.id)">{{ row.knowledgeCount }} 条</button><span v-else>0 条</span></td>
-              <td>{{ date(row.capturedAt) }}</td><td>{{ date(row.lastParsedAt) }}</td></template>
+              <td>{{ date(row.lastParsedAt) }}</td></template>
             <template v-else><td>{{ namesOf(row,'MATERIAL') }}</td><td>{{ namesOf(row,'DOMAIN') }}</td>
               <td>{{ row.formatCode === 'METADATA' ? '来源记录' : row.formatCode }}</td><td>{{ modes[row.acquireMode] || '—' }}</td><td>{{ date(row.capturedAt) }}</td></template>
             <td><div class="table-actions">
-              <template v-if="!parseOnly"><button class="link" :aria-label="'查看原文：'+row.title" title="查看原文" @click="openMaterial(row.id,'preview')"><FileText :size="16" /></button>
-                <a :href="original(row.id)" :aria-label="'下载原件：'+row.title" title="下载原件"><Download :size="16" /></a></template>
+              <template v-if="!parseOnly"><button class="link" :aria-label="'查看原文：'+row.title" @click="openMaterial(row.id,'preview')">原文</button>
+                <a :href="original(row.id)" :aria-label="'下载原件：'+row.title">下载</a></template>
               <button v-if="row.status !== 'APPROVED'" class="link" @click="openMaterial(row.id)">审核原文</button>
-              <button v-else class="link" @click="openMaterial(row.id,'parse')">AI解析</button>
-              <button v-if="!parseOnly && row.knowledgeCount" class="link" @click="emit('navigate','knowledge','material:' + row.id)">解析结果</button>
+              <button v-else-if="parseOnly || !row.knowledgeCount" class="link" @click="openMaterial(row.id,'parse')">{{ parseOnly ? 'AI解析' : '解析' }}</button>
+              <button v-if="!parseOnly && row.knowledgeCount" class="link" @click="emit('navigate','knowledge','material:' + row.id)">结果</button>
             </div></td>
           </tr></tbody></table></div>
       <EmptyState v-else :title="loading ? '正在查询原文' : '暂无匹配原文'" />
       <Pagination v-bind="table" resizable @change="load" @resize="pageSize = $event; load()" />
     </section>
   </div>
-  <UploadOriginal v-if="uploadForm" :task-id="uploadForm.taskId" @close="uploadForm = null" @notice="emit('notice',$event)" @complete="uploaded" />
+  <UploadOriginal v-if="uploadForm" :task-id="uploadForm.taskId" :directory="directory" @close="uploadForm = null" @notice="emit('notice',$event)" @complete="uploaded" />
 
   <Drawer v-if="item" :title="item.material.title" :subtitle="parseFocus ? 'AI解析 · 选择知识模板' : '原文详情'" wide :busy="busy" @close="item = null">
     <div class="toolbar">

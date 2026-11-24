@@ -11,6 +11,8 @@ import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
+import org.apache.pdfbox.text.PDFTextStripper;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -62,5 +64,36 @@ class PdfPreview {
         } finally {
             renderSlots.release();
         }
+    }
+
+    @GetMapping("/locate")
+    Map<String,Integer> locate(@PathVariable String id, @RequestParam String q) throws IOException {
+        String term = compact(q);
+        if (term.isEmpty() || q.length()>300) throw Support.bad("请输入 1 至 300 字的原文片段");
+        if (!renderSlots.tryAcquire()) throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"原件正在读取，请稍后重试");
+        try (var doc = open(id)) {
+            class Locator extends PDFTextStripper {
+                int match;
+                @Override protected void writePage() throws IOException {
+                    if (match!=0) return;
+                    var destination = output;
+                    var page = new java.io.StringWriter();
+                    output = page;
+                    try { super.writePage(); } finally { output=destination; }
+                    if (compact(page.toString()).contains(term)) match=getCurrentPageNo();
+                }
+                @Override public void processPage(org.apache.pdfbox.pdmodel.PDPage page) throws IOException {
+                    if (match==0) super.processPage(page);
+                }
+            }
+            var reader = new Locator();
+            reader.setSortByPosition(true);
+            reader.writeText(doc,java.io.Writer.nullWriter());
+            return Map.of("page",reader.match);
+        } finally { renderSlots.release(); }
+    }
+
+    private static String compact(String text) {
+        return text.replaceAll("(?U)\\s+","").toLowerCase(java.util.Locale.ROOT);
     }
 }

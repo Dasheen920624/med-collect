@@ -16,14 +16,14 @@ import ClassificationsView from './views/Classifications.vue'
 import TemplatesView from './views/Templates.vue'
 
 const views = [
-  { id: 'overview', name: '文献采集工作台', component: Dashboard },
-  { id: 'tasks', name: '采集任务', component: Tasks },
-  { id: 'materials', name: '文献原文库', component: Materials },
-  { id: 'production', name: '文献解析', component: Materials },
-  { id: 'knowledge', name: '审核与同步', component: Knowledge },
-  { id: 'sources', name: '采集来源', component: Sources },
-  { id: 'classifications', name: '业务分类', component: ClassificationsView },
-  { id: 'templates', name: '解析模板', component: TemplatesView },
+  { id: 'overview', name: '知识采集概览', component: Dashboard },
+  { id: 'tasks', name: '知识采集管理', component: Tasks },
+  { id: 'materials', name: '文献原文管理', component: Materials },
+  { id: 'production', name: '静态知识解析', component: Materials },
+  { id: 'knowledge', name: '知识审核管理', component: Knowledge },
+  { id: 'sources', name: '知识来源配置', component: Sources },
+  { id: 'classifications', name: '知识分类配置', component: ClassificationsView },
+  { id: 'templates', name: '知识生成模板', component: TemplatesView },
   { id: 'settings', name: '系统设置', component: SettingsView, admin: true },
   { id: 'users', name: '用户管理', component: UsersView, admin: true },
 ]
@@ -197,10 +197,10 @@ onUnmounted(() => {
 
       <nav aria-label="主导航">
         <button class="nav-group" :aria-expanded="collectionOpen" @click="collectionOpen = !collectionOpen">
-          <CloudDownload :size="17" /> 文献工作区 <ChevronDown :size="15" :class="{ folded: !collectionOpen }" />
+          <CloudDownload :size="17" /> 知识自动采集 <ChevronDown :size="15" :class="{ folded: !collectionOpen }" />
         </button>
         <div v-show="collectionOpen" class="nav-children">
-          <template v-for="item in views.filter(v=>!v.admin)" :key="item.id"><div v-if="item.id==='sources'" class="nav-divider">采集配置</div>
+          <template v-for="item in views.filter(v=>!v.admin)" :key="item.id">
           <button :class="{ active: selected.id === item.id }"
             :aria-current="selected.id === item.id ? 'page' : undefined" @click="go(item.id)"><component :is="navIcons[item.id]" :size="16" />{{ item.name }}</button></template>
         </div>

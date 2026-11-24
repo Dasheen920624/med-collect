@@ -4,11 +4,12 @@ import { Upload } from '@lucide/vue'
 import { send } from '../api'
 import Drawer from './Drawer.vue'
 
-const props = defineProps({ taskId: String })
+const props = defineProps({ taskId: String, directory: Array })
 const emit = defineEmits(['close','complete','notice'])
 const files = ref([])
 const task = ref(props.taskId || '')
 const title = ref('')
+const materialTypeId = ref('')
 const url = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -28,6 +29,7 @@ async function upload() {
       const data = new FormData()
       data.append('file', file)
       data.append('taskId', task.value)
+      if (materialTypeId.value) data.append('materialTypeId',materialTypeId.value)
       if (files.value.length === 1 && !receipts.length && title.value) data.append('title',title.value)
       if (url.value) data.append('sourceUrl',url.value)
       try { receipts.push(await send('/materials/upload',data)) }
@@ -49,6 +51,8 @@ async function upload() {
         <input type="file" multiple accept=".pdf,.docx,.txt,.csv,.xls,.xlsx,.htm,.html" :disabled="busy" @change="files = Array.from($event.target.files)" />
       </label>
       <label v-if="files.length <= 1">资料名称<input v-model.trim="title" maxlength="400" placeholder="留空时使用文件中的标题或文件名" /></label>
+      <label>资料类型<select v-model="materialTypeId"><option value="">自动识别</option>
+        <option v-for="n in (directory || []).filter(n=>n.groupCode==='MATERIAL' && n.enabled)" :key="n.id" :value="n.id">{{ n.name }}</option></select></label>
       <label>来源网址<input v-model.trim="url" type="url" maxlength="1000" placeholder="原文下载页或发布机构地址" /></label>
       <p v-if="error" role="alert" class="message error">{{ error }}</p>
     </form>

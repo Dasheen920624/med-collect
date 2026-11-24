@@ -16,7 +16,7 @@ function go(page) {
     <span>共 <b>{{ total }}</b> 条　{{ (page - 1) * size + 1 }}–{{ Math.min(page * size,total) }} 条</span>
     <div>
       <label v-if="resizable" class="pager-field">每页<select :value="size" aria-label="每页条数" @change="emit('resize',Number($event.target.value))">
-        <option v-for="n in [10,20,50]" :key="n" :value="n">{{ n }} 条</option></select></label>
+        <option v-for="n in [10,20,50,100]" :key="n" :value="n">{{ n }} 条</option></select></label>
       <button class="button secondary" :disabled="page <= 1" @click="go(page - 1)">上一页</button>
       <span class="current-page" aria-current="page">{{ page }}</span>
       <button class="button secondary" :disabled="page >= pages" @click="go(page + 1)">下一页</button>

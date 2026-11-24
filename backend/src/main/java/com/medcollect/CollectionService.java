@@ -30,8 +30,10 @@ class CollectionService {
     static final int MAX_TARGETS = 100;
     private static final Logger log = LoggerFactory.getLogger(CollectionService.class);
     private record Target(String url, Source source) {}
+    private record MaterialKind(String id,String name) {}
     private static class Counts {
         int added, duplicate, failed, metadata, candidates;
+        long renewAt;
         int total() { return added + duplicate + failed + metadata + candidates; }
     }
     private final Store store;
@@ -151,6 +153,10 @@ class CollectionService {
                 .param("id", id).query(String.class).list();
     }
 
+    List<String> materialTypes(String id) {
+        return store.db().sql("SELECT class_id FROM mc_task_material_type WHERE task_id=:id ORDER BY class_id").param("id",id).query(String.class).list();
+    }
+
     @Transactional
     Task saveTask(String id, TaskInput input, String actor) {
         boolean creating = id == null;
@@ -185,6 +191,7 @@ class CollectionService {
             if (input.mode() == Mode.EUROPE_PMC && sourceId != null) throw bad("文献检索的资料来源为 Europe PMC");
         }
         if (input.selectResults() && input.mode() != Mode.WEB) throw bad("仅全网搜索支持选择结果后采集");
+        if (input.resultLimit()==0 && input.mode()!=Mode.URL) throw bad("不限数量适用于指定网址或栏目下载");
         long now = store.now();
         var schedule = CaptureSchedule.of(input);
         Long next = schedule.afterSave(previous, input.enabled(), now);
@@ -211,6 +218,14 @@ class CollectionService {
                 """;
         changed(store.db().sql(statement).paramSource(params).update());
         saveTargets(taskId, sourceIds, urls);
+        if (input.materialTypeIds()!=null) {
+            store.db().sql("DELETE FROM mc_task_material_type WHERE task_id=:task").param("task",taskId).update();
+            for (String type : input.materialTypeIds().stream().distinct().toList()) {
+                int saved=store.db().sql("INSERT INTO mc_task_material_type (task_id,class_id) SELECT :task,id FROM mc_classification WHERE id=:type AND group_code='MATERIAL' AND enabled=1")
+                        .param("task",taskId).param("type",type).update();
+                if (saved!=1) throw bad("请选择启用的资料类型");
+            }
+        }
         store.event("TASK", taskId, creating ? "CREATED" : "UPDATED", actor, query);
         return store.task(taskId);
     }
@@ -328,11 +343,14 @@ class CollectionService {
         var counts = new Counts();
         String note = null;
         try {
-            if (selected.isEmpty()) discover(run, counts);
+            var types = store.db().sql("SELECT c.id,c.name FROM mc_classification c JOIN mc_task_material_type f ON f.class_id=c.id WHERE f.task_id=:id")
+                    .param("id",run.taskId()).query(MaterialKind.class).list();
+            if (selected.isEmpty()) discover(run, counts, types);
             else for (RunResult row : selected) {
                 var candidate = new Acquisition.Candidate(row.title(), row.url(), null);
                 Source source = row.sourceId() == null ? null : store.source(row.sourceId());
-                acquire(run, candidate, source, counts);
+                renewLease(run,counts);
+                acquire(run, candidate, source, counts,types);
             }
             if (counts.total() == 0) note = "没有匹配的检索结果";
             if (counts.candidates > 0) note = "搜索完成，选择结果后采集";
@@ -348,22 +366,32 @@ class CollectionService {
         finish(run, counts.added, counts.duplicate, counts.failed, counts.metadata, note, status);
     }
 
-    private void discover(Run run, Counts counts) {
+    private void renewLease(Run run, Counts counts) {
+        long now=store.now();
+        if (counts.renewAt>now) return;
+        changed(store.db().sql("UPDATE mc_task SET lease_until=:until WHERE id=:id AND lease_token=:run")
+                .param("until",now+Duration.ofMinutes(90).toMillis()).param("id",run.taskId()).param("run",run.id()).update());
+        counts.renewAt=now+Duration.ofMinutes(1).toMillis();
+    }
+
+    private void discover(Run run, Counts counts, List<MaterialKind> types) {
         Task task = store.task(run.taskId());
         var seen = new HashSet<String>();
         for (Target target : targets(task)) {
-            if (counts.total() >= task.resultLimit()) break;
+            if (task.resultLimit()>0 && counts.added + counts.candidates >= task.resultLimit()) break;
             try {
                 available(target.source());
-                for (var candidate : acquisition.discover(task, target.source(), target.url())) {
-                    if (counts.total() >= task.resultLimit()) break;
+                renewLease(run,counts);
+                for (var candidate : acquisition.discover(task, target.source(), target.url(),types.stream().map(MaterialKind::name).toList())) {
+                    if (task.resultLimit()>0 && counts.added + counts.candidates >= task.resultLimit()) break;
                     if (!seen.add(candidate.url())) continue;
+                    renewLease(run,counts);
                     if (task.selectResults()) {
                         materials.result(run.id(), null, candidate.title(), candidate.url(), "CANDIDATE", null,
                                 target.source() == null ? null : target.source().id());
                         counts.candidates++;
                     } else {
-                        acquire(run, candidate, target.source(), counts);
+                        acquire(run, candidate, target.source(), counts,types);
                     }
                 }
             } catch (IOException | ResponseStatusException e) {
@@ -374,11 +402,22 @@ class CollectionService {
         }
     }
 
-    private void acquire(Run run, Acquisition.Candidate candidate, Source source, Counts counts) {
+    private void acquire(Run run, Acquisition.Candidate candidate, Source source, Counts counts, List<MaterialKind> types) {
         try {
             available(source);
             var captured = acquisition.acquire(candidate, source);
-            var registered = materials.register(captured.material(), run.actor(), run.id(), captured.note());
+            var material=captured.material();
+            String selectedType=null;
+            if (!types.isEmpty()) {
+                String inferred=MaterialService.inferredType(material.title(),material.externalRef(),material.sourceUrl());
+                selectedType=types.stream().filter(t -> t.id().equals(inferred) || trim(material.title()).contains(t.name()))
+                        .map(MaterialKind::id).findFirst().orElse(null);
+                if (selectedType==null) {
+                    materials.result(run.id(),null,material.title(),candidate.url(),"FILTERED","资料类型与所选范围不符");
+                    return;
+                }
+            }
+            var registered = materials.register(material, run.actor(), run.id(), captured.note(), selectedType);
             if (registered.duplicate()) counts.duplicate++;
             else if ("METADATA".equals(captured.material().formatCode())) counts.metadata++;
             else counts.added++;
@@ -402,7 +441,7 @@ class CollectionService {
         return targets;
     }
 
-    Registration upload(MultipartFile file, String title, String sourceUrl, String taskId, String actor) throws IOException {
+    Registration upload(MultipartFile file, String title, String sourceUrl, String taskId, String materialTypeId, String actor) throws IOException {
         String url = trim(sourceUrl).isBlank() ? null : httpUri(sourceUrl).toString();
         if (url != null && url.length() > 1000) throw bad("资料地址超过 1000 字符");
         String id = trim(taskId).isBlank() ? null : taskId;
@@ -413,7 +452,7 @@ class CollectionService {
             if (url == null && source != null) url = source.url();
             Acquired material = reader.read(file.getBytes(), file.getOriginalFilename(), file.getContentType(),
                     url, null, source == null ? "手工上传" : source.name(), title);
-            Registration registration = materials.register(material, actor, run == null ? null : run.id(), null);
+            Registration registration = materials.register(material, actor, run == null ? null : run.id(), null, materialTypeId);
             if (run != null) finish(run, registration.duplicate() ? 0 : 1, registration.duplicate() ? 1 : 0,
                     0, null, RunStatus.SUCCEEDED);
             return registration;

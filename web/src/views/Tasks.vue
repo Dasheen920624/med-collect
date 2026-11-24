@@ -63,6 +63,7 @@ async function edit(task, quick = '') {
     const urls = detail?.urls?.length ? detail.urls : entry.mode === 'URL' && entry.queryText ? [entry.queryText] : []
     const ids = detail?.sourceIds?.length ? detail.sourceIds : entry.sourceId ? [entry.sourceId] : []
     editing.value = { ...entry, quick, targetMode: 'address', sourceId: entry.sourceId || '', sourceIds: ids, targetUrls: urls.join('\n'),
+      unlimited:task ? entry.resultLimit===0 : quick==='URL', resultLimit:entry.resultLimit || 10, materialTypeIds:detail?.materialTypeIds || [],
       scheduleMode: scheduleMode(entry), scheduleLocal: localDate(entry.scheduleAt), dailyTime: entry.dailyTime || '',
       selectResults: entry.selectResults ?? true }
     drawerError.value = ''
@@ -85,7 +86,8 @@ async function save() {
     const selectedSources = form.quick === 'URL' && form.targetMode === 'address' ? [] : form.sourceIds
     const generatedName = form.queryText || urls[0] || sources.value.find(s => selectedSources.includes(s.id))?.name || modes[form.mode]
     const saved = await send(form.id ? '/tasks/' + form.id : '/tasks', {
-      ...form, name: form.name || Array.from(modes[form.mode] + '：' + generatedName).slice(0,120).join(''), intervalMinutes: mode === 'INTERVAL' ? form.intervalMinutes : 0, scheduleMode: mode,
+      ...form, resultLimit:form.mode==='URL' && form.unlimited ? 0 : form.resultLimit,
+      name: form.name || Array.from(modes[form.mode] + '：' + generatedName).slice(0,120).join(''), intervalMinutes: mode === 'INTERVAL' ? form.intervalMinutes : 0, scheduleMode: mode,
       scheduleAt: mode === 'ONCE' && form.scheduleLocal ? new Date(form.scheduleLocal).getTime() : null,
       urls: form.mode === 'URL' ? urls : [],
       sourceIds: form.mode === 'EUROPE_PMC' ? [] : form.mode === 'UPLOAD'
@@ -232,7 +234,7 @@ function resultText(r) {
 
 <template>
   <section class="page-head">
-    <h1>采集任务</h1>
+    <h1>知识采集管理</h1>
     <div v-if="session.admin" class="actions">
         <button class="button secondary" @click="edit(null,'URL')">指定网址下载</button>
       <button class="button secondary" @click="uploadTask = ''">手工上传</button>
@@ -264,10 +266,10 @@ function resultText(r) {
       </div></details>
     </form>
     <div v-if="table.rows.length" class="table-wrap">
-      <table><thead><tr><th>序号</th><th>任务标题</th><th>采集方式</th><th>创建时间</th><th>执行计划</th><th>采集结果</th><th>状态</th><th>操作</th></tr></thead>
+      <table><thead><tr><th>序号</th><th>任务标题</th><th>创建者</th><th>采集方式</th><th>创建时间</th><th>执行计划</th><th>采集结果</th><th>状态</th><th>操作</th></tr></thead>
         <tbody><tr v-for="(task,i) in table.rows" :key="task.id">
           <td>{{ (table.page - 1) * table.size + i + 1 }}</td><td><button class="link" @click="openTask(task.id)">{{ task.name }}</button></td>
-          <td>{{ modes[task.mode] }}</td><td>{{ date(task.createdAt,true) }}</td>
+          <td>{{ task.createdBy || '未记录' }}</td><td>{{ modes[task.mode] }}</td><td>{{ date(task.createdAt,true) }}</td>
           <td>{{ scheduleText(task) }}<small v-if="!task.enabled" class="subline">计划已暂停</small></td>
           <td><button v-if="task.latestRun" class="link" @click="openRun(task.latestRun.id)">{{ resultText(task.latestRun) }}</button><span v-else>—</span></td>
           <td><StateBadge :state="task.latestRun?.status || 'WAITING'" :labels="{...runStates,WAITING:'待执行'}" /></td>
@@ -281,7 +283,7 @@ function resultText(r) {
     <EmptyState v-else :title="loading ? '正在读取任务' : '暂无匹配任务'" />
     <Pagination v-bind="table" resizable @change="load" @resize="pageSize = $event; load(1)" />
   </section>
-  <UploadOriginal v-if="uploadTask !== null" :task-id="uploadTask" @notice="emit('notice',$event)" @close="uploadTask = null"
+  <UploadOriginal v-if="uploadTask !== null" :task-id="uploadTask" :directory="directory" @notice="emit('notice',$event)" @close="uploadTask = null"
     @complete="uploadTask = null; load(1); openTask($event.taskId)" />
 
   <BusinessLibrary v-if="businessLibrary" :admin="session.admin" :directory="props.directory" @close="businessLibrary=false"
@@ -331,6 +333,8 @@ function resultText(r) {
 
   <Drawer v-if="editing" :title="editing.id ? '编辑采集任务' : modes[editing.quick] || '新建采集任务'" :busy="busy" @close="editing = null">
     <form id="task-form" class="form-grid" @submit.prevent="save">
+      <div v-if="editing.quick==='WEB'" class="form-grid"><strong>搜索方式</strong><div class="tab-buttons">
+        <button type="button" aria-pressed="true">简单搜索</button><button type="button" @click="editing=null;openPlanner()">详细规划</button></div></div>
       <label>任务名称<input v-model.trim="editing.name" :required="!editing.quick" maxlength="120" placeholder="例如 成人高血压管理指南" /></label>
       <label v-if="!editing.quick">采集方式<select v-model="editing.mode"><option v-for="(name, code) in availableModes" :key="code" :value="code">{{ name }}</option></select></label>
       <label v-if="editing.mode === 'UPLOAD'">资料来源<select v-model="editing.sourceId">
@@ -346,6 +350,9 @@ function resultText(r) {
       </select></label>
       <label v-if="editing.mode === 'URL' && (editing.quick !== 'URL' || editing.targetMode === 'address')">资料地址（每行一个）<textarea v-model="editing.targetUrls" rows="3" :required="editing.quick === 'URL' || !editing.sourceIds.length" placeholder="https://…" /></label>
       <label v-if="editing.mode === 'EUROPE_PMC' || editing.mode === 'WEB'">检索关键词<input v-model.trim="editing.queryText" required maxlength="1000" placeholder="例如 hypertension guideline" /></label>
+      <a v-if="editing.mode==='URL' && editing.targetMode==='address' && /^https?:\/\/[^\s]+$/i.test(editing.targetUrls.trim())" :href="editing.targetUrls.trim()" target="_blank" rel="noopener noreferrer" class="link">预览 ↗</a>
+      <details v-if="['URL','WEB'].includes(editing.mode)" class="raw-text"><summary>资料类型 · {{ editing.materialTypeIds.length ? editing.materialTypeIds.map(id=>directory.find(n=>n.id===id)?.name).filter(Boolean).join('、') : '不限' }}</summary>
+        <div class="choice-row"><label v-for="n in directory.filter(n=>n.groupCode==='MATERIAL' && n.enabled)" :key="n.id" class="check"><input v-model="editing.materialTypeIds" type="checkbox" :value="n.id"/>{{ n.name }}</label></div></details>
       <div v-if="editing.mode === 'URL'" class="choice-row">
         <label class="check"><input v-model="editing.captureMode" type="radio" value="SINGLE" /> 单一网页或文件</label>
         <label class="check"><input v-model="editing.captureMode" type="radio" value="LINKS" /> 栏目内链接</label>
@@ -358,9 +365,10 @@ function resultText(r) {
         <label v-if="editing.scheduleMode === 'INTERVAL'">间隔（分钟）<input v-model.number="editing.intervalMinutes" type="number" min="1" max="525600" required /></label>
         <label v-if="editing.scheduleMode === 'ONCE'">执行时间<input v-model="editing.scheduleLocal" type="datetime-local" required /></label>
         <label v-if="editing.scheduleMode === 'DAILY'">每天执行时间（北京时间）<input v-model="editing.dailyTime" type="time" required /></label>
-        <label>采集数量<input v-model.number="editing.resultLimit" type="number" list="capture-limits" min="1" max="100" required />
+        <label>采集数量<span v-if="editing.mode==='URL'" class="check"><input v-model="editing.unlimited" type="checkbox"/>不限</span>
+          <input v-if="editing.mode!=='URL' || !editing.unlimited" v-model.number="editing.resultLimit" type="number" list="capture-limits" min="1" max="100" required />
           <datalist id="capture-limits"><option v-for="n in [5,10,20,50,100]" :key="n" :value="n" /></datalist>
-          <small>每次最多 100 条，结果不足时按实际数量。</small></label>
+          <small v-if="editing.mode==='URL' && editing.unlimited">处理所选地址或当前栏目中的全部站内资料链接。</small></label>
         <label v-if="editing.scheduleMode !== 'MANUAL'" class="check"><input v-model="editing.enabled" type="checkbox" /> 启用定时计划</label>
       </div>
       <p v-if="drawerError" class="message error" role="alert">{{ drawerError }}</p>
@@ -401,7 +409,7 @@ function resultText(r) {
     </template>
   </Drawer>
 
-  <Drawer v-if="planner" title="智能采集规划" subtitle="根据需求拟定任务，确认后保存。" wide :busy="busy" @close="planner = false">
+  <Drawer v-if="planner" title="详细规划" wide :busy="busy" @close="planner = false">
     <form class="form-grid" @submit.prevent="suggest">
       <label>采集需求<textarea v-model.trim="instruction" required rows="4" maxlength="3000"
         placeholder="例如 收集成人高血压诊疗指南与近五年的系统综述"></textarea></label>

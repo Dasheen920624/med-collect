@@ -1,80 +1,69 @@
 <script setup>
-import { computed,ref,watch } from 'vue'
-import { ArrowRight, BookOpen, BookOpenCheck, CheckCheck, ClipboardCheck, CloudDownload, FileSearch, Files, Send, Plus, Upload } from '@lucide/vue'
-import { api,list } from '../api'
-import { date,modes,taskState } from '../labels'
+import { computed, ref, watch } from 'vue'
+import { ArrowRight, Files, Inbox, ScanText, ClipboardCheck } from '@lucide/vue'
+import { list } from '../api'
+import { modes, scheduleText, taskState } from '../labels'
 
-const props=defineProps({subjectId:String,session:Object,directory:Array})
-const emit=defineEmits(['navigate'])
-const stats=ref({}), recent=ref([]), queue=ref({}), tab=ref('raw'), busy=ref(true), issue=ref('')
-const featured=ref(null)
-const today=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'long',day:'numeric',weekday:'long'}).format(new Date())
-const queues=[
-  {key:'raw',label:'核验原文',view:'materials',action:'核验原文'},
-  {key:'parse',label:'解析文献',view:'production',action:'开始解析'},
-  {key:'drafts',label:'整理草稿',view:'knowledge',action:'编辑草稿'},
-  {key:'review',label:'审核稿件',view:'knowledge',action:'审核稿件'},
+const props = defineProps({ subjectId: String, directory: Array })
+const emit = defineEmits(['navigate'])
+const stats = ref({}), recent = ref([]), error = ref(''), loading = ref(false)
+const scope = computed(() => props.directory?.find(n => n.id === props.subjectId)?.name
+  || (props.subjectId === 'unassigned' ? '未关联学科' : '全部专科'))
+const steps = [
+  ['知识采集管理','取得文件和网页正文','tasks','个任务','tasks','',Inbox],
+  ['文献原文管理','查看原文、分类和来源','materials','份原文','materials','originals',Files],
+  ['静态知识解析','按知识模板整理内容','unparsed','份未解析','production','unparsed',ScanText],
+  ['知识审核管理','跟踪提交、审核与发布','pendingKnowledge','条待审核','knowledge','pending',ClipboardCheck],
 ]
-const current=computed(()=>queues.find(q=>q.key===tab.value))
-const scope=computed(()=>props.directory?.find(n=>n.id===props.subjectId)?.name || (props.subjectId==='unassigned'?'未关联学科':'全部专科'))
-const metrics=[
-  {key:'materials',title:'已采集原文',icon:Files,view:'materials',detail:'originals'},
-  {key:'tasks',title:'采集任务',icon:CloudDownload,view:'tasks'},
-  {key:'written',title:'已写入 4.23',icon:CheckCheck,view:'knowledge',detail:'synced'},
+const configuration = [
+  ['知识来源配置','维护采集网址、授权和启用状态','sources'],
+  ['知识分类配置','维护学科病种和资料分类','classifications'],
+  ['知识生成模板','维护知识属性和内容结构','templates'],
 ]
-function handleRow(row) {
-  const entry=current.value
-  emit('navigate',entry.view,entry.key==='parse'?'parse:'+row.id:row.id)
-}
-watch(()=>props.subjectId,async(subjectId,_,clean)=>{
-  let active=true;clean(()=>{active=false});busy.value=true;issue.value=''
-  stats.value={};queue.value={};recent.value=[];featured.value=null
+const delivery = [
+  ['审核通过待同步','readyToSync','ready'],['同步异常','syncFailed','failed'],
+  ['相同已跳过','skipped','skipped'],['已写入 4.23','written','synced'],
+]
+watch(() => props.subjectId, async (subjectId, _, cleanup) => {
+  let active = true
+  cleanup(() => { active = false })
+  loading.value = true; error.value = ''; stats.value = {}; recent.value = []
   try {
-    const [totals,tasks,raw,parse,drafts,review,published]=await Promise.all([
-      list('/dashboard',{subjectId}),list('/tasks',{subjectId,size:3}),
-      list('/materials',{subjectId,status:'PENDING',size:4}),list('/materials',{subjectId,status:'APPROVED',parsed:false,originalsOnly:true,size:4}),
-      list('/knowledge',{subjectId,human:'EDITABLE',size:4}),list('/knowledge',{subjectId,status:'PENDING',size:4}),list('/knowledge',{subjectId,sync:'SYNCED',size:1})])
-    if(active){stats.value=totals;recent.value=tasks.rows;queue.value={raw,parse,drafts,review}
-      tab.value=queues.find(q=>queue.value[q.key].total)?.key || 'raw'}
-    if(active && published.rows.length) {
-      const k=published.rows[0]
-      const m=await api('/materials/'+k.materialId)
-      if(active) featured.value={...k,material:m.material}
-    }
-  } catch(e){if(active) issue.value=e.message}finally{if(active) busy.value=false}
-},{immediate:true})
+    const [summary, tasks] = await Promise.all([list('/dashboard',{subjectId}),list('/tasks',{subjectId,size:4})])
+    if (active) { stats.value = summary; recent.value = tasks.rows }
+  } catch (e) { if (active) error.value = e.message }
+  finally { if (active) loading.value = false }
+}, {immediate:true})
 </script>
 <template>
-  <section class="desk-heading desk-masthead"><div class="desk-intro"><div class="desk-context"><span class="context-dot"></span>{{ scope }}<i></i>{{ today }}</div><h1>文献采集工作台</h1>
-    <div class="actions"><button v-if="session.admin" class="button primary" @click="emit('navigate','tasks','new')"><Plus :size="16"/>新建采集</button>
-      <button v-if="session.admin" class="button mast-action" @click="emit('navigate','materials','upload')"><Upload :size="15"/>上传原文</button></div></div>
-    <button v-if="featured" class="featured-paper" @click="emit('navigate','knowledge',featured.id)">
-      <span class="paper-info"><small><span class="paper-dot"></span>最近写入 4.23 的知识</small><strong>{{ featured.title }}</strong>
-        <span>{{ featured.material.publisher || featured.material.sourceName || '业务文献' }}<ArrowRight :size="15"/></span></span>
-      <span v-if="featured.material.formatCode==='PDF'" class="paper-cover"><img :src="'/api/materials/'+featured.materialId+'/pdf-preview/1'" alt="该文献的 PDF 首页" /></span>
-    </button>
-  </section>
-  <p v-if="issue" class="message error" role="alert">{{ issue }}</p>
-  <section class="desk-metrics" aria-label="文献处理统计"><button v-for="m in metrics" :key="m.key" @click="emit('navigate',m.view,m.detail)">
-    <span class="desk-icon"><component :is="m.icon" :size="19"/></span><span><small>{{ m.title }}</small><strong>{{ stats[m.key] ?? '—' }}</strong></span><ArrowRight :size="15"/></button></section>
-  <div class="desk-columns"><section class="desk-panel inbox"><header><div><ClipboardCheck :size="18"/><h2>待办文献</h2></div></header>
-    <div class="inbox-tabs"><button v-for="q in queues" :key="q.key" :aria-pressed="q.key===tab" @click="tab=q.key">{{ q.label }}<b>{{ queue[q.key]?.total ?? '—' }}</b></button></div>
-    <div v-if="busy" class="desk-empty" role="status">正在读取待办…</div>
-    <button v-for="row in queue[tab]?.rows || []" :key="row.id" class="inbox-row" @click="handleRow(row)">
-      <FileSearch :size="20"/><span><strong>{{ row.title }}</strong><small>{{ row.sourceName || row.materialTitle || row.formatCode }} · {{ date(row.capturedAt || row.updatedAt) }}</small></span><span class="row-action">{{ current.action }} <ArrowRight :size="13"/></span></button>
-    <div v-if="!busy && !queue[tab]?.total && !issue" class="desk-empty"><BookOpenCheck :size="22"/>当前范围暂无{{ current.label }}待办</div>
-    <button v-if="queue[tab]?.total>4" class="link desk-more" @click="emit('navigate',current.view,tab==='parse'?'ready':tab==='drafts'?'drafts':'pending')">查看全部 {{ queue[tab].total }} 条 <ArrowRight :size="14"/></button>
-  </section>
-  <section class="desk-panel masterdata"><header><div><Send :size="18"/><h2>同步至 4.23</h2></div></header>
-    <div class="reference-counts delivery-counts">
-      <button @click="emit('navigate','knowledge','ready')"><strong>{{ stats.readyToSync ?? '—' }}</strong><small>审核通过待同步</small></button>
-      <button @click="emit('navigate','knowledge','failed')"><strong>{{ stats.syncFailed ?? '—' }}</strong><small>同步异常</small></button>
-      <button @click="emit('navigate','knowledge','skipped')"><strong>{{ stats.skipped ?? '—' }}</strong><small>相同已跳过</small></button>
+  <p class="scope-caption">{{ scope }}</p>
+  <section class="page-head"><h1>知识采集概览</h1></section>
+  <p v-if="error" class="message error" role="alert">{{ error }}</p>
+  <section class="desk-panel flow-panel">
+    <header><h2>知识采集与处理</h2><span>{{ scope }}</span></header>
+    <div class="flow-steps">
+      <button v-for="[name,description,key,unit,view,detail,icon] in steps" :key="view" @click="emit('navigate',view,detail)">
+        <component :is="icon" :size="23" class="flow-icon"/><strong>{{ name }}</strong><small>{{ description }}</small>
+        <span class="flow-count"><b>{{ stats[key] ?? '—' }}</b> {{ unit }}</span><span class="flow-enter">进入 <ArrowRight :size="15"/></span>
+      </button>
     </div>
-    <small class="reference-time">目标库 · 4.23 知识管理</small>
-    <div class="reference-links"><button class="link" @click="emit('navigate','knowledge','ready')">处理待同步稿件 <ArrowRight :size="14"/></button>
-      <button class="link" @click="emit('navigate','knowledge','synced')">查看写入记录 <ArrowRight :size="14"/></button></div></section></div>
-  <section class="desk-panel recent-work"><header><div><BookOpen :size="18"/><h2>最近采集任务</h2></div><button class="link" @click="emit('navigate','tasks')">全部任务 <ArrowRight :size="14"/></button></header>
-    <button v-for="task in recent" :key="task.id" class="inbox-row" @click="emit('navigate','tasks',task.id)"><span class="task-mark"></span><span><strong>{{ task.name }}</strong><small>{{ modes[task.mode] }} · {{ date(task.createdAt,true) }}</small></span><span class="task-status">{{ taskState(task) }}</span></button>
-    <p v-if="!busy && !recent.length" class="desk-empty">当前专科暂无采集任务</p></section>
+  </section>
+  <div class="desk-columns">
+    <section class="desk-panel recent-work"><header><h2>最近采集任务</h2><button class="link" @click="emit('navigate','tasks')">全部任务 <ArrowRight :size="15"/></button></header>
+      <div class="recent-label"><span>任务标题 / 采集方式</span><span>任务状态</span></div>
+      <button v-for="task in recent" :key="task.id" class="recent-task" @click="emit('navigate','tasks',task.id)">
+        <span><strong>{{ task.name }}</strong><small>{{ modes[task.mode] }} · {{ scheduleText(task) }}</small></span><span>{{ taskState(task) }}</span>
+      </button>
+      <p v-if="!recent.length" class="desk-empty">{{ loading ? '正在读取任务…' : '当前范围暂无采集任务' }}</p>
+    </section>
+    <section class="desk-panel config-shortcuts"><header><h2>配置入口</h2></header>
+      <button v-for="[name,desc,view] in configuration" :key="view" @click="emit('navigate',view)">
+        <span><strong>{{ name }}</strong><small>{{ desc }}</small></span><ArrowRight :size="15"/>
+      </button>
+    </section>
+  </div>
+  <section class="desk-panel"><header><h2>同步至 4.23</h2><span>知识管理</span></header>
+    <div class="delivery-summary"><button v-for="[label,key,detail] in delivery" :key="key" @click="emit('navigate','knowledge',detail)">
+      {{ label }} <b>{{ stats[key] ?? '—' }}</b></button></div>
+  </section>
 </template>

@@ -110,7 +110,7 @@ class CollectionController {
     @GetMapping("/tasks/{id}")
     Map<String, Object> task(@PathVariable String id) {
         return Map.of("task", store.task(id), "runs", collection.runs(id, 1, 30).rows(), "events", store.events("TASK", id),
-                "sourceIds", collection.taskSourceIds(id), "urls", collection.taskUrls(id));
+                "sourceIds", collection.taskSourceIds(id), "urls", collection.taskUrls(id), "materialTypeIds",collection.materialTypes(id));
     }
 
     @PostMapping("/tasks")
@@ -155,25 +155,25 @@ class CollectionController {
                                  @RequestParam(defaultValue = "false") boolean originalsOnly,
                                  @RequestParam(required = false) String subjectId, @RequestParam(required = false) String domainId,
                                  @RequestParam(required = false) String materialTypeId, @RequestParam(required = false) Mode acquireMode,
-                                 @RequestParam(required = false) Boolean parsed, @RequestParam(required = false) Long fromTime,
+                                 @RequestParam(required = false) Boolean parsed, @RequestParam(required = false) String parseState, @RequestParam(required = false) Long fromTime,
                                  @RequestParam(required = false) Long untilTime,
                                  @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
         return materials.list(query, status, format, classId, originalsOnly, subjectId, domainId, materialTypeId,
-                acquireMode, parsed, fromTime, untilTime, page, size);
+                acquireMode, parsed, parseState, fromTime, untilTime, page, size);
     }
 
     @GetMapping("/materials/{id}")
     Map<String, Object> material(@PathVariable String id) {
         return Map.of("material", detail(store.material(id)), "runs", materials.runs(id),
                 "events", store.events("MATERIAL", id), "classificationIds", classifications.materialClasses(id),
-                "knowledge", knowledge.list(null, null, id, null, null, null, 1, 20));
+                "knowledge", knowledge.list(null, null, id, null, null, null, null, null, 1, 20));
     }
 
     @PostMapping(value = "/materials/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     Registration upload(@RequestParam MultipartFile file, @RequestParam(required = false) @Size(max = 400) String title,
                         @RequestParam(required = false) @Size(max = 1000) String sourceUrl,
-                        @RequestParam(required = false) String taskId, Principal actor) throws IOException {
-        return collection.upload(file, title, sourceUrl, taskId, actor.getName());
+                        @RequestParam(required = false) String taskId, @RequestParam(required = false) @Size(max=36) String materialTypeId, Principal actor) throws IOException {
+        return collection.upload(file, title, sourceUrl, taskId, materialTypeId, actor.getName());
     }
 
     @GetMapping("/materials/{id}/original")

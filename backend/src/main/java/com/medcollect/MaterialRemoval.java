@@ -46,7 +46,7 @@ class MaterialRemoval {
             }
             if (!trim(material.sourceUrl()).isEmpty() && db.sql("""
                     SELECT COUNT(*) FROM mc_knowledge WHERE material_id<>:id AND status NOT IN ('DRAFT','RETURNED')
-                    AND INSTR(summary,:url)>0
+                    AND (INSTR(summary,:url)>0 OR INSTR(fields_json,:url)>0)
                     """).param("id",id).param("url",material.sourceUrl()).query(Long.class).single()>0) {
                 throw conflict("其他知识稿仍引用这个原文地址，请先核对引用");
             }

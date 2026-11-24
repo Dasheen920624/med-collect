@@ -49,7 +49,7 @@ class BusinessReferenceController {
         if(!file.isBlank() && detail.attachments().stream().noneMatch(f->f.id().equals(file))) throw Support.bad("请从本条业务文献中选择原件");
         String query=BusinessLiterature.key(id)+"/"+(file.isBlank()?"metadata":BusinessLiterature.key(file));
         var task=collection.saveTask(null,new TaskInput(Support.limit(detail.item().title(),120),Mode.BUSINESS,query,null,
-                CaptureMode.SINGLE,1,0,true,null,ScheduleMode.MANUAL,null,null,false,null,null),actor.getName());
+                CaptureMode.SINGLE,1,0,true,null,ScheduleMode.MANUAL,null,null,false,null,null,null),actor.getName());
         return collection.start(task.id(),actor.getName());
     }
 }
