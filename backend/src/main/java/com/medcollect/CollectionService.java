@@ -251,7 +251,10 @@ class CollectionService {
 
     List<RunResult> results(String runId) {
         store.run(runId);
-        return store.db().sql("SELECT * FROM mc_run_result WHERE run_id = :id ORDER BY title, id")
+        return store.db().sql("""
+                SELECT r.*, m.archived_at FROM mc_run_result r LEFT JOIN mc_material m ON m.id=r.material_id
+                WHERE r.run_id=:id ORDER BY r.title, r.id
+                """)
                 .param("id", runId).query(RunResult.class).list();
     }
 

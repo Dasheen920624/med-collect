@@ -13,4 +13,5 @@
   <include file="009-sync-origin.xml" relativeToChangelogFile="true"/>
   <include file="010-review-publication.sql" relativeToChangelogFile="true"/>
   <include file="011-parse-template.sql" relativeToChangelogFile="true"/>
+  <include file="012-material-archive.sql" relativeToChangelogFile="true"/>
 </databaseChangeLog>

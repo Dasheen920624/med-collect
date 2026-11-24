@@ -1,7 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ExternalLink, FileText, Search, Send, Sparkles } from '@lucide/vue'
-import { api, list, original, send } from '../api'
+import { api, list, send } from '../api'
 import { date, knowledgeStates, relations } from '../labels'
 import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -9,16 +9,19 @@ import BusinessRelation from '../components/BusinessRelation.vue'
 import BusinessTargetPicker from '../components/BusinessTargetPicker.vue'
 import BusinessSyncReceipt from '../components/BusinessSyncReceipt.vue'
 import BusinessProperty from '../components/BusinessProperty.vue'
+import BusinessReference from '../components/BusinessReference.vue'
+import OriginalLink from '../components/OriginalLink.vue'
 import PdfReader from '../components/PdfReader.vue'
 import Events from '../components/Events.vue'
 import KnowledgeDifferences from '../components/KnowledgeDifferences.vue'
 import Pagination from '../components/Pagination.vue'
 import StateBadge from '../components/StateBadge.vue'
 
-const props = defineProps({ session: Object, detail: String, subjectId: String })
+const props = defineProps({ session: Object, detail: String, subjectId: String, directory: Array })
 const emit = defineEmits(['navigate', 'notice'])
 const table = ref({ rows: [], total: 0, page: 1, size: 10 })
-const freshFilters = () => ({ query: '', status: '', human: '', sync: '', materialId: '', submission:'', publication:'' })
+const freshFilters = () => ({ query: '', status: '', human: '', sync: '', materialId: '', submission:'', publication:'',
+  classificationId:'', typeCode:'', knowledgeClass:'' })
 const filters = ref(freshFilters())
 const pageSize = ref(10)
 const materialChoices = ref([])
@@ -73,8 +76,8 @@ watch(() => [content.value?.knowledge?.typeCode,content.value?.knowledge?.knowle
     if (active) { classOptions.value = options; classLabel.value = options.find(c => c.code === code)?.name || '' }
   } catch { /* The stored business code remains visible when the directory is unavailable. */ }
 })
-const humanLabels = { DRAFT:'草稿', PENDING:'待审核', APPROVED:'已通过', RETURNED:'已退回', REFERENCE_ONLY:'仅供对照' }
-const syncLabels = { READY:'审核通过待同步', UNSYNCED:'未同步', SYNCING:'同步中', SYNCED:'已写入 4.23', SKIPPED:'相同已跳过', SYNC_FAILED:'同步异常', REFERENCE_ONLY:'业务原有 · 仅对照' }
+const humanLabels = { DRAFT:'草稿', PENDING:'待审核', APPROVED:'已通过', RETURNED:'已退回', REFERENCE_ONLY:'仅供对照', SYNC_DECLINED:'已审核' }
+const syncLabels = { READY:'审核通过待同步', UNSYNCED:'未同步', SYNCING:'同步中', SYNCED:'已写入 4.23', SKIPPED:'相同已跳过', SYNC_FAILED:'同步异常', REFERENCE_ONLY:'业务原有 · 仅对照', SYNC_DECLINED:'不予同步' }
 const outcomeLabels = { ...syncLabels, CREATE:'已新增', UPDATE:'已更新' }
 const humanState = row => row.status in humanLabels ? row.status : 'APPROVED'
 const syncState = row => row.syncPhase === 'SKIPPED' ? 'SKIPPED' : row.deliveredOperation || (row.status === 'APPROVED' ? 'READY' : row.status in syncLabels ? row.status : 'UNSYNCED')
@@ -91,8 +94,15 @@ async function loadChoices() {
 }
 watch(materialQuery, () => { clearTimeout(choiceTimer); choiceTimer = setTimeout(loadChoices,180) })
 const categories = ref({})
+const scopedList = computed(() => {
+  const { classificationId, typeCode, knowledgeClass } = filters.value
+  if (classificationId) return props.directory?.find(node => node.id === classificationId)?.name || '当前资料分类'
+  if (typeCode) return [categories.value[typeCode] || typeCode, knowledgeClass].filter(Boolean).join(' · ')
+  return ''
+})
 const form = ref(null)
 const note = ref('')
+const acceptSimilar = ref(false)
 const issue = ref('')
 const panelIssue = ref('')
 const advice = ref(null)
@@ -104,23 +114,34 @@ let poll
 
 const draft = computed(() => content.value?.knowledge)
 const review = computed(() => content.value?.syncReview)
-const editable = computed(() => ['DRAFT', 'RETURNED'].includes(draft.value?.status))
+const archived = computed(() => !!content.value?.material.archivedAt)
+const pending = computed(() => !archived.value && draft.value?.status === 'PENDING')
+const editable = computed(() => !archived.value && ['DRAFT', 'RETURNED'].includes(draft.value?.status))
 const changedFields = computed(() => editable.value && form.value && (form.value.title !== draft.value.title
   || form.value.knowledgeClass !== (draft.value.knowledgeClass || '') || form.value.summary !== (draft.value.summary || '') || JSON.stringify(form.value.fields) !== JSON.stringify(draft.value.fields)
   || Object.entries(form.value.relations).some(([k,v]) => JSON.stringify(v) !== JSON.stringify(draft.value.relations[k] || []))))
 const otherFields = computed(() => draft.value?.schema.fields.filter(field => field.id !== draft.value.schema.summaryKey
   && !['laiyuan','references'].includes(field.id)) || [])
-const canSync = computed(() => ['APPROVED', 'SYNC_FAILED'].includes(draft.value?.status)
-  || (draft.value?.status === 'SYNCING' && draft.value.syncLease < Date.now()))
+const canSync = computed(() => !archived.value && (['APPROVED', 'SYNC_FAILED'].includes(draft.value?.status)
+  || (draft.value?.status === 'SYNCING' && draft.value.syncLease < Date.now())))
 const canReopen = computed(() => canSync.value && draft.value?.status !== 'SYNCING'
   && !draft.value?.remoteId && !draft.value?.syncPhase)
-const canCompare = computed(() => props.session.cdssConfigured && !draft.value?.remoteId && !draft.value?.syncPhase
-  && ['PENDING', 'APPROVED', 'SYNC_FAILED', 'REFERENCE_ONLY'].includes(draft.value?.status))
+const canCompare = computed(() => !archived.value && props.session.cdssConfigured && !draft.value?.remoteId && !draft.value?.syncPhase
+  && ['PENDING', 'APPROVED', 'SYNC_FAILED', 'REFERENCE_ONLY','SYNC_DECLINED'].includes(draft.value?.status))
 const needsReview = computed(() => !review.value?.approved && !draft.value?.remoteId && !draft.value?.syncPhase)
-const approveReady = computed(() => !props.session.cdssConfigured || ['CREATE','UPDATE','SKIP'].includes(review.value?.operation))
+const approveReady = computed(() => !props.session.cdssConfigured
+  || ['UPDATE','SKIP'].includes(review.value?.operation) || (review.value?.operation === 'CREATE' && review.value.similarityChecked))
+const similar = computed(() => review.value?.related || [])
+const canDecline = computed(() => canCompare.value && ['PENDING','REFERENCE_ONLY'].includes(draft.value?.status)
+  && (review.value?.target || review.value?.candidates?.length || similar.value.length))
+const declined = computed(() => draft.value?.status === 'SYNC_DECLINED' ? content.value?.events.find(e => e.action==='SYNC_DECLINED') : null)
+const linkedRecord = computed(() => {
+  if (!draft.value?.remoteId || review.value?.target?.id === draft.value.remoteId) return null
+  return { id:draft.value.remoteId, title:draft.value.title, url:draft.value.remoteUrl }
+})
 const hasVersionTarget = computed(() => draft.value?.remoteId || draft.value?.updateTargetId || review.value?.target)
 const reviewMessages = {
-  CREATE: '未找到匹配知识。审核通过后可新增到 4.23。',
+  CREATE: '未发现重复。审核通过后可新增到 4.23。',
   UPDATE: '这条知识由采集系统新增。人工审核通过后，沿用原业务 ID 更新并保存版本记录。',
   SKIP: '匹配内容一致。审核通过后可登记跳过。',
   CHOOSE: '找到多个匹配记录。请选择对应的业务知识，核对来源和差异。',
@@ -144,7 +165,10 @@ function setDraft(data, resetNote) {
     versionDetail.value = null
     reading.value = 'split'
   }
-  if (draft.value?.id !== data.knowledge.id || draft.value?.revision !== data.knowledge.revision) advice.value = null
+  if (draft.value?.id !== data.knowledge.id || draft.value?.revision !== data.knowledge.revision) {
+    advice.value = null
+    acceptSimilar.value = false
+  }
   content.value = data
   const knowledge = data.knowledge
   form.value = {
@@ -265,7 +289,7 @@ async function save(submit) {
 }
 
 async function act(action, approved) {
-  const needsNote = action === 'reopen' || action === 'sync-reset' || (action === 'decision' && !approved)
+  const needsNote = action === 'reopen' || action === 'sync-reset' || action === 'sync-decline' || (action === 'decision' && !approved)
   if (needsNote && !note.value.trim()) {
     panelIssue.value = '请填写审核意见或复核结果'
     return
@@ -275,13 +299,13 @@ async function act(action, approved) {
   const id = draft.value.id
   try {
     await send('/knowledge/' + id + '/' + action, {
-      revision: draft.value.revision, approved, note: note.value, reviewId: review.value?.id,
+      revision: draft.value.revision, approved, note: note.value, reviewId: review.value?.id, acceptSimilar: acceptSimilar.value,
     })
     await openDraft(id)
     await load(table.value.page)
     const message = action === 'sync' ? '已发起同步，请查看同步记录'
       : action === 'sync-reset' ? '复核结果已登记，可重新发起同步'
-      : approved ? '人工审核通过' : '知识已退回'
+      : action === 'sync-decline' ? '已记录不予同步' : approved ? '人工审核通过' : '知识已退回'
     emit('notice', message)
   } catch (e) { panelIssue.value = e.message }
   finally { busy.value = false }
@@ -294,6 +318,13 @@ async function applyDetail(value) {
     await load()
   } else if (['synced','ready','failed','skipped','reference'].includes(value)) {
     filters.value.sync = { synced:'SYNCED', ready:'READY', failed:'SYNC_FAILED', skipped:'SKIPPED', reference:'REFERENCE_ONLY' }[value]
+    await load()
+  } else if (value?.startsWith('class:')) {
+    filters.value.classificationId = value.slice(6)
+    await load()
+  } else if (value?.startsWith('type:')) {
+    const [, typeCode, knowledgeClass = ''] = value.split(':')
+    Object.assign(filters.value,{typeCode,knowledgeClass})
     await load()
   } else if (value?.startsWith('material:')) {
     filters.value.materialId = value.slice(9)
@@ -341,6 +372,7 @@ watch(() => props.detail, applyDetail)
         <option value="PUBLISHED">已发布</option><option value="UNPUBLISHED">未发布</option><option value="UNKNOWN">待核验</option></select>
       <button class="button primary" :disabled="loading">查询</button>
       <button class="button secondary" type="button" @click="filters=freshFilters(); materialQuery=''; load()">重置</button>
+      <button v-if="scopedList" class="link" type="button" @click="filters.classificationId=''; filters.typeCode=''; filters.knowledgeClass=''; load()">清除筛选 · {{ scopedList }}</button>
       <details class="extra-filters" :open="!!(filters.sync || filters.materialId)"><summary>更多筛选</summary><div class="actions">
       <input v-if="choicesTotal > 50 || materialQuery" v-model.trim="materialQuery" aria-label="搜索原文选项" placeholder="搜索原文选项" />
       <select v-model="filters.materialId" aria-label="来源原文"><option value="">全部来源原文</option>
@@ -353,7 +385,7 @@ watch(() => props.detail, applyDetail)
     <div v-if="table.rows.length" class="table-wrap">
       <table class="knowledge-list"><thead><tr><th>序号</th><th>知识名称 / 类别</th><th>来源原文</th><th>AI预审核</th><th>提交状态</th><th>审核状态</th><th>发布状态</th><th>同步状态</th><th class="actions-cell">操作</th></tr></thead>
         <tbody><tr v-for="(row,i) in table.rows" :key="row.id">
-          <td>{{ (table.page-1)*table.size+i+1 }}</td><td><button class="link record-title" @click="openDraft(row.id)">{{ row.title }}</button><small class="subline">{{ categories[row.typeCode] || row.typeCode }}</small></td>
+          <td>{{ (table.page-1)*table.size+i+1 }}</td><td><button class="link record-title" @click="openDraft(row.id)">{{ row.title }}</button><small class="subline">{{ [categories[row.typeCode] || row.typeCode, row.knowledgeClass, row.versionNo ? 'V' + row.versionNo : ''].filter(Boolean).join(' · ') }}</small></td>
           <td><button class="link record-title" @click="emit('navigate','materials',row.materialId)">{{ row.materialTitle }}</button></td>
           <td><button v-if="row.aiReviewedAt" class="link" @click="openDraft(row.id)">查看意见</button><span v-else>未预审</span></td>
           <td>{{ row.status === 'DRAFT' ? '未提交' : '已提交' }}</td>
@@ -380,8 +412,8 @@ watch(() => props.detail, applyDetail)
       </div></div>
     <div class="review-columns" :class="{single:reading !== 'split'}">
       <section v-show="reading !== 'knowledge'" class="source-column">
-        <div class="reader-title"><h3>来源原文</h3><a v-if="content.material.formatCode !== 'PDF'" :href="original(content.material.id)" target="_blank" rel="noopener noreferrer">打开原件 ↗</a></div>
-        <p class="original-title">{{ content.material.title }}</p>
+        <div class="reader-title"><h3>来源原文</h3></div>
+        <p class="original-title"><OriginalLink :material="content.material" /></p>
         <form class="evidence-search" @submit.prevent="locateEvidence()"><input type="search" v-model="evidenceQuery" maxlength="300" placeholder="查找原文片段" aria-label="原文片段"/>
           <button class="button secondary" :disabled="!evidenceQuery.trim()">定位原文</button></form><small role="status">{{ evidenceMessage }}</small>
         <PdfReader v-if="content.material.formatCode === 'PDF'" ref="pdfReader" :material-id="content.material.id" :title="content.material.title" />
@@ -389,10 +421,13 @@ watch(() => props.detail, applyDetail)
       </section>
       <section v-show="reading !== 'source'" class="knowledge-column">
     <div class="toolbar">
-      <span v-if="draft.syncPhase === 'SKIPPED'" class="message success">内容一致，已跳过</span>
+      <StateBadge v-if="archived" state="ARCHIVED" :labels="{ARCHIVED:'原文已移除'}" />
+      <span v-else-if="draft.syncPhase === 'SKIPPED'" class="message success">内容一致，已跳过</span>
       <StateBadge v-else :state="draft.status" :labels="knowledgeStates" />
       <strong>{{ draft.schema.category.name }}<span v-if="draft.knowledgeClass"> › {{ classLabel || draft.knowledgeClass }}</span></strong>
     </div>
+    <p v-if="archived" class="message">移除时间 {{ date(content.material.archivedAt,true) }} · {{ content.material.archivedBy }}<br>{{ content.material.archiveReason }}</p>
+    <p v-if="declined" class="message"><strong>已决定不予同步</strong> · {{ declined.actor }} · {{ date(declined.occurredAt,true) }}<br>{{ declined.note }}</p>
     <BusinessSyncReceipt v-if="draft.remoteUrl && draft.status === 'SYNCED'" :key="draft.id" :draft="draft" />
     <details class="review-metadata"><summary>资料信息</summary>
     <dl class="metadata">
@@ -411,9 +446,9 @@ watch(() => props.detail, applyDetail)
       <h3>采集来源</h3>
       <dl class="metadata provenance-block">
         <div><dt>来源站点</dt><dd>{{ content.material.sourceName || '未登记' }}</dd></div>
-        <div><dt>采集原件</dt><dd><a :href="original(content.material.id)" target="_blank" rel="noopener">{{ content.material.fileName }}</a></dd></div>
-        <div v-if="content.material.sourceUrl"><dt>原始地址</dt><dd><a :href="content.material.sourceUrl" target="_blank" rel="noopener noreferrer">{{ content.material.sourceUrl }}</a></dd></div>
-        <div v-if="content.material.fetchedUrl && content.material.fetchedUrl!==content.material.sourceUrl"><dt>实际获取地址</dt><dd><a :href="content.material.fetchedUrl" target="_blank" rel="noopener noreferrer">{{ content.material.fetchedUrl }}</a></dd></div>
+        <div><dt>采集原件</dt><dd><OriginalLink :material="content.material" /></dd></div>
+        <div v-if="content.material.sourceUrl"><dt>原始来源</dt><dd><a :href="content.material.sourceUrl" :title="content.material.sourceUrl" target="_blank" rel="noopener noreferrer">查看原发布页</a></dd></div>
+        <div v-if="content.material.fetchedUrl && content.material.fetchedUrl!==content.material.sourceUrl"><dt>获取来源</dt><dd><a :href="content.material.fetchedUrl" :title="content.material.fetchedUrl" target="_blank" rel="noopener noreferrer">查看实际获取页面</a></dd></div>
       </dl>
       <h3>知识出处</h3>
       <p class="reading-text">{{ content.material.citation }}</p>
@@ -425,7 +460,7 @@ watch(() => props.detail, applyDetail)
       </select></label>
       <label>标题<input v-model="form.title" required maxlength="100" :readonly="!editable" /></label>
       <label>摘要<textarea v-model="form.summary" rows="7" maxlength="12000" :readonly="!editable"></textarea></label>
-      <p v-if="content.material.formatCode === 'PDF'" class="muted">同步时保留摘要，并绑定 PDF 原件。</p>
+      <p v-if="!archived && content.material.formatCode === 'PDF'" class="muted">同步时保留摘要，并绑定 PDF 原件。</p>
       <details v-else-if="otherFields.some(field => editable || draft.fields[field.id])" class="raw-text">
         <summary>模板字段</summary>
         <div class="form-grid inset">
@@ -445,32 +480,35 @@ watch(() => props.detail, applyDetail)
         </div>
       </details>
     </form>
-    <section v-if="canCompare || review" class="form-section form-grid" aria-label="同步前查重与差异">
+    <section v-if="canCompare || review || linkedRecord" class="form-section form-grid" aria-label="同步前查重与差异">
       <div class="toolbar">
         <h3>同步前查重与差异</h3>
         <button v-if="canCompare" class="button secondary" :disabled="busy" @click="compare()">
-          <Search :size="16" /> {{ review ? '重新查重' : '检查重复与差异' }}
+          <Search :size="16" /> {{ review ? '重新查重' : '核对重复与相似资料' }}
         </button>
       </div>
       <p v-if="canCompare && !review" class="muted">审核前核对 4.23 现有知识。</p>
-      <BusinessTargetPicker v-if="canCompare && !draft.updateTargetId && !(draft.status==='REFERENCE_ONLY' && !draft.knowledgeClass)" :key="draft.id" :draft-id="draft.id" :busy="busy" @select="id => compare(id,true)" />
+      <BusinessTargetPicker v-if="canCompare && !draft.updateTargetId && draft.knowledgeClass" :key="draft.id" :draft-id="draft.id" :busy="busy" @select="id => compare(id,true)" />
+      <BusinessReference v-if="linkedRecord" :key="linkedRecord.id" :draft-id="draft.id" :candidate="linkedRecord" />
       <template v-if="review">
-        <p v-if="draft.syncPhase !== 'SKIPPED' && draft.status !== 'SYNCED'">{{ review.operation==='REFERENCE_ONLY' && !review.target?.knowledgeClass ? '4.23 目标缺少有效类别，已归入只读对照。' : reviewMessages[review.operation] }}</p>
+        <p v-if="pending && review.operation === 'CREATE' && !review.similarityChecked" class="message">这份稿件已有查重记录，请重新查重以补查相似资料。</p>
+        <p v-else-if="!archived && !declined && draft.syncPhase !== 'SKIPPED' && draft.status !== 'SYNCED' && !similar.length">{{ review.operation==='REFERENCE_ONLY' && !review.target?.knowledgeClass ? '4.23 目标缺少有效类别，已归入只读对照。' : reviewMessages[review.operation] }}</p>
         <p v-if="review.mayResetBusinessReview && draft.status !== 'SYNCED'" class="message">
           4.23 可能按业务权限重置原记录的审核或发布状态，并停用该知识。
         </p>
         <p v-if="review.doi" class="muted">DOI {{ review.doi }}</p>
-        <ul v-if="review.operation === 'CHOOSE'" class="simple-list">
+        <ul v-if="review.operation === 'CHOOSE'" class="business-references">
           <li v-for="candidate in review.candidates" :key="candidate.id">
-            <span><a :href="candidate.url" target="_blank" rel="noopener noreferrer">{{ candidate.title }}</a>
-              <small class="subline">{{ candidate.collectorCreated ? '采集系统新增' : '业务原有 · 仅对照' }} · {{ candidate.basis }} · {{ candidate.knowledgeClass || '未分子类' }} · {{ candidate.id }}</small></span>
-            <button class="button secondary" :disabled="busy || !canCompare" @click="compare(candidate.id)">选择并对比</button>
+            <BusinessReference :draft-id="draft.id" :candidate="candidate" />
+            <button v-if="canCompare && !declined" class="button secondary" :disabled="busy" @click="compare(candidate.id)">选择并对比</button>
           </li>
         </ul>
-        <p v-if="review.target" class="muted">{{ review.target.collectorCreated ? '采集系统新增' : '业务原有' }} · {{ review.target.basis }} ·
-          <a :href="review.target.url" target="_blank" rel="noopener noreferrer">{{ review.target.title }}</a>
-          · {{ review.target.id }}
-        </p>
+        <BusinessReference v-if="review.target" :key="review.target.id" :draft-id="draft.id" :candidate="review.target" />
+        <section v-if="similar.length" class="form-grid" aria-label="4.23 相似资料">
+          <p class="message"><strong>发现 {{ similar.length }} 条 4.23 相似资料</strong><br>核对业务资料后选择是否按新知识同步。</p>
+          <ul class="business-references"><li v-for="candidate in similar" :key="candidate.id"><BusinessReference :draft-id="draft.id" :candidate="candidate" /></li></ul>
+          <label v-if="pending" class="check"><input v-model="acceptSimilar" type="checkbox" :disabled="busy" /> 已核对相似资料，同意将本稿作为新知识同步</label>
+        </section>
         <KnowledgeDifferences :differences="review.differences" />
       </template>
     </section>
@@ -499,10 +537,10 @@ watch(() => props.detail, applyDetail)
         <details v-if="versionDetail.after" class="raw-text"><summary>同步后快照</summary><pre>{{ snapshotText(versionDetail.after) }}</pre></details>
       </section>
     </section>
-    <section v-if="draft.status === 'PENDING' || latestAdvice" class="form-section form-grid">
+    <section v-if="pending || latestAdvice" class="form-section form-grid">
       <div class="toolbar">
         <h3>AI 预审核</h3>
-        <button v-if="draft.status === 'PENDING'" class="button secondary" :disabled="busy" @click="preReview"><Sparkles :size="16" /> 生成核对提示</button>
+        <button v-if="pending" class="button secondary" :disabled="busy" @click="preReview"><Sparkles :size="16" /> {{ latestAdvice ? '重新预审核' : '生成核对提示' }}</button>
       </div>
       <ul v-if="advice?.findings.length" class="simple-list">
         <li v-for="(finding, index) in advice.findings" :key="index">{{ finding }} <button v-if="advice.quotes?.[index]" class="link" @click="locateEvidence(advice.quotes[index])">定位依据</button></li>
@@ -510,23 +548,24 @@ watch(() => props.detail, applyDetail)
       <p v-else-if="advice" class="muted">模型未返回核对提示。</p>
       <p v-else-if="latestAdvice" class="reading-text">{{ latestAdvice.note }}</p>
     </section>
-    <div v-if="draft.status === 'PENDING' || canReopen || draft.syncPhase === 'POSTING'" class="form-section form-grid">
+    <div v-if="pending || canDecline || canReopen || (canSync && draft.syncPhase === 'POSTING')" class="form-section form-grid">
       <h3>{{ draft.syncPhase === 'POSTING' ? '业务记录复核' : '人工审核' }}</h3>
       <label>意见<textarea v-model.trim="note" rows="3" maxlength="1000" placeholder="填写审核意见、退回原因或复核结果"></textarea></label>
       <p v-if="draft.syncPhase === 'POSTING'" class="muted">若确认 4.23 未生成记录，可登记复核结果后重新发起。</p>
     </div>
     <p v-if="panelIssue" class="message error" role="alert">{{ panelIssue }}</p>
-    <Events :events="content.events" />
+    <details class="raw-text"><summary>操作记录</summary><Events :events="content.events" /></details>
       </section>
     </div>
-    <template v-if="editable || draft.status === 'PENDING' || canSync" #footer>
+    <template v-if="editable || pending || canSync || canDecline" #footer>
       <template v-if="editable">
         <button class="button secondary" form="knowledge-form" :disabled="busy">保存草稿</button>
         <button class="button primary" :disabled="busy || !form.title.trim() || !form.summary.trim()" @click="save(true)"><Send :size="16" /> 保存并提交审核</button>
       </template>
-      <template v-else-if="draft.status === 'PENDING'">
-        <button class="button secondary" :disabled="busy" @click="act('decision', false)">退回修改</button>
-        <button v-if="approveReady" class="button primary" :disabled="busy" @click="act('decision', true)">人工审核通过</button>
+      <template v-else-if="pending || canDecline">
+        <button v-if="pending" class="button secondary" :disabled="busy" @click="act('decision', false)">退回修改</button>
+        <button v-if="canDecline" class="button secondary" :disabled="busy" @click="act('sync-decline')">不予同步</button>
+        <button v-if="pending && approveReady" class="button primary" :disabled="busy || (similar.length > 0 && !acceptSimilar)" @click="act('decision', true)">{{ similar.length ? '审核通过并同意同步' : '人工审核通过' }}</button>
       </template>
       <template v-else>
         <button v-if="canReopen" class="button secondary" :disabled="busy" @click="act('reopen')">退回修改</button>

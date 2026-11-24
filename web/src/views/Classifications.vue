@@ -8,7 +8,7 @@ import Drawer from '../components/Drawer.vue'
 import EmptyState from '../components/EmptyState.vue'
 import StateBadge from '../components/StateBadge.vue'
 
-const props = defineProps({ session: Object })
+const props = defineProps({ session: Object, detail: String })
 const emit = defineEmits(['notice', 'navigate', 'directory-changed', 'scope'])
 const groups = { SUBJECT: '学科病种目录', DOMAIN: '知识类别目录', MATERIAL: '资料类型' }
 const nodes = ref([])
@@ -31,6 +31,11 @@ const size = ref(10)
 const page = ref(1)
 const groupNodes = computed(() => nodes.value.filter(n => n.groupCode === group.value))
 const current = computed(() => groupNodes.value.find(n => n.id === selected.value))
+const addLabel = computed(() => {
+  if (group.value === 'SUBJECT') return selected.value ? '新增病种' : '新增学科'
+  if (group.value === 'DOMAIN') return selected.value ? '新增子类' : '新增一级类别'
+  return '新增资料类型'
+})
 const siblingsOf = node => groupNodes.value.filter(n => n.parentId === node.parentId)
 const rows = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -64,6 +69,15 @@ const parents = computed(() => nodes.value.filter(node => node.groupCode === for
 function showMaterials(node) {
   emit('scope', node.groupCode === 'SUBJECT' ? node.id : '')
   emit('navigate', 'materials', 'class:' + node.id)
+}
+function showKnowledge(node) {
+  emit('scope', '')
+  emit('navigate','knowledge','class:' + node.id)
+}
+function classificationName(group, subordinate) {
+  if (group === 'SUBJECT') return subordinate ? '病种' : '学科'
+  if (group === 'DOMAIN') return '知识类别'
+  return '资料类型'
 }
 function nameOf(id) { return nodes.value.find(node => node.id === id)?.name }
 function active(node) { return node.enabled && (!node.parentId || nodes.value.find(parent => parent.id === node.parentId)?.enabled) }
@@ -102,6 +116,7 @@ onMounted(load)
 <template>
   <section class="page-head">
     <h1>知识分类配置</h1>
+    <button v-if="detail==='from-originals'" class="link" @click="emit('navigate','materials')">返回原文列表</button>
     <div class="tab-buttons"><button v-for="(name,k) in groups" :key="k" :aria-pressed="group===k" @click="group=k">{{ name }}</button></div>
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
@@ -112,14 +127,14 @@ onMounted(load)
     <DirectoryTree :key="group" :title="groups[group]" :nodes="groupNodes" :all-label="group === 'SUBJECT' ? '全部学科' : '全部分类'"
       :selected="selected" @select="selected=$event;query=''" />
     <section class="panel"><div class="panel-head"><h2>{{ current?.name || groups[group] }}</h2>
-      <button v-if="props.session.admin" class="button primary" @click="edit()"><Plus :size="16" />{{ group==='SUBJECT' ? (selected ? '新增病种' : '新增学科') : '新增分类' }}</button></div>
+      <button v-if="props.session.admin" class="button primary" @click="edit()"><Plus :size="16" />{{ addLabel }}</button></div>
       <div class="filters"><label class="search"><Search :size="15" /><input v-model.trim="query" placeholder="搜索分类名称或编码" aria-label="搜索分类" /></label></div>
-      <div v-if="rows.length" class="table-wrap"><table class="classification-list"><thead><tr><th>序号</th><th>名称</th><th>{{ group==='SUBJECT' && !selected ? '病种数量' : '子项数量' }}</th><th>对应编码</th><th>状态</th><th class="usage-cell">使用情况</th><th class="actions-cell">操作</th></tr></thead>
+      <div v-if="rows.length" class="table-wrap"><table class="classification-list"><thead><tr><th>序号</th><th>名称</th><th v-if="group!=='MATERIAL'">{{ group==='SUBJECT' && !selected ? '病种数量' : '直属下级' }}</th><th>对应编码</th><th>状态</th><th class="usage-cell">使用情况</th><th class="actions-cell">操作</th></tr></thead>
         <tbody><tr v-for="(node,i) in visible" :key="node.id"><td>{{ (page-1)*size+i+1 }}</td>
           <td><button class="link" @click="selected=node.id;query=''">{{ node.name }}</button></td>
-          <td>{{ groupNodes.filter(n => n.parentId === node.id).length }}</td><td>{{ node.businessCode || '—' }}<small class="subline">{{ node.remoteKey ? '4.23 业务目录' : '采集端维护' }}</small></td>
+          <td v-if="group!=='MATERIAL'">{{ groupNodes.filter(n => n.parentId === node.id).length }}</td><td>{{ node.businessCode || '—' }}<small class="subline">{{ node.remoteKey ? '4.23 业务目录' : '采集端维护' }}</small></td>
           <td><StateBadge :state="active(node) ? 'ACTIVE' : 'OFF'" :labels="{ACTIVE:'启用',OFF:node.enabled ? '上级停用' : '停用'}" /></td>
-          <td class="usage-cell"><button v-if="node.materialCount" class="link" @click="showMaterials(node)">{{ node.materialCount }} 份原文</button><span v-else>0 份原文</span><span class="usage-separator" aria-hidden="true"> / </span>{{ node.knowledgeCount }} 条知识</td>
+          <td class="usage-cell"><button v-if="node.materialCount" class="link" @click="showMaterials(node)">{{ node.materialCount }} 份原文</button><span v-else>0 份原文</span><span class="usage-separator" aria-hidden="true"> / </span><button v-if="node.knowledgeCount" class="link" @click="showKnowledge(node)">{{ node.knowledgeCount }} 条知识</button><span v-else>0 条知识</span></td>
           <td class="actions-cell"><span v-if="node.remoteKey" class="muted">随业务同步</span><div v-else-if="props.session.admin" class="table-actions"><button class="link" @click="edit(node)">编辑</button>
             <button class="link" :disabled="busy" @click="toggle(node)">{{ node.enabled ? '停用' : '启用' }}</button>
             <button v-if="adjacent(node,-1)" class="link" :disabled="busy" @click="move(node,-1)">上移</button><button v-if="adjacent(node,1)" class="link" :disabled="busy" @click="move(node,1)">下移</button></div><span v-else>—</span></td>
@@ -128,7 +143,7 @@ onMounted(load)
       <Pagination :page="page" :size="size" :total="rows.length" resizable @change="page=$event" @resize="size=$event;page=1" />
     </section>
   </div>
-  <Drawer v-if="form" :title="form.id ? '编辑分类' : '新建分类'" :busy="busy" @close="form = null">
+  <Drawer v-if="form" :title="form.id ? '编辑' + classificationName(form.groupCode,form.parentId) : addLabel" :busy="busy" @close="form = null">
     <form id="class-form" class="form-grid" @submit.prevent="save">
       <label>分类名称<input v-model.trim="form.name" required maxlength="120" /></label>
       <label v-if="form.groupCode !== 'MATERIAL'">上级目录<select v-model="form.parentId">

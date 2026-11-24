@@ -32,9 +32,11 @@ class Classifications {
     private static final String NODE_QUERY = """
             SELECT c.*,
                 (SELECT COUNT(DISTINCT a.material_id) FROM mc_material_class a JOIN mc_classification sub ON sub.id = a.class_id
-                  WHERE sub.id = c.id OR sub.parent_id = c.id) material_count,
+                  JOIN mc_material m ON m.id = a.material_id WHERE m.archived_at IS NULL AND (sub.id = c.id OR sub.parent_id = c.id)) material_count,
                 (SELECT COUNT(DISTINCT k.id) FROM mc_knowledge k JOIN mc_material_class a ON a.material_id = k.material_id
-                  JOIN mc_classification sub ON sub.id = a.class_id WHERE sub.id = c.id OR sub.parent_id = c.id) knowledge_count
+                  JOIN mc_material m ON m.id = k.material_id
+                  JOIN mc_classification sub ON sub.id = a.class_id
+                  WHERE m.archived_at IS NULL AND (sub.id = c.id OR sub.parent_id = c.id)) knowledge_count
             FROM mc_classification c
             """;
     private final Store store;
@@ -153,7 +155,7 @@ class Classifications {
         }
         if (input.groupCode() == Group.MATERIAL && choices.size() > 1) throw bad("每份原文只能选择一种资料类型");
         for (String materialId : new LinkedHashSet<>(input.materialIds())) {
-            store.material(materialId);
+            store.lockActiveMaterial(materialId);
             store.db().sql("""
                     DELETE FROM mc_material_class WHERE material_id = :id AND class_id IN
                       (SELECT id FROM mc_classification WHERE group_code = :group)

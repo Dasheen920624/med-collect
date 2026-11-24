@@ -50,9 +50,21 @@ class KnowledgeWorkflow {
     }
 
     Page<KnowledgeList> list(String query, KnowledgeStatus status, String materialId, String human, String sync,
-                             String subjectId, String submission, String publication, int page, int size) {
+                             String subjectId, String submission, String publication, String classificationId,
+                             String typeCode, String knowledgeClass, int page, int size) {
+        return list(query, status, materialId, human, sync, subjectId, submission, publication, classificationId, typeCode, knowledgeClass, page, size, false);
+    }
+
+    Page<KnowledgeList> forMaterial(String materialId, boolean archived) {
+        return list(null, null, materialId, null, null, null, null, null, null, null, null, 1, 20, archived);
+    }
+
+    private Page<KnowledgeList> list(String query, KnowledgeStatus status, String materialId, String human, String sync,
+                                     String subjectId, String submission, String publication, String classificationId,
+                                     String typeCode, String knowledgeClass, int page, int size, boolean archived) {
         Map<String, Object> filters = new HashMap<>();
-        String from = "FROM mc_knowledge k JOIN mc_material m ON m.id = k.material_id WHERE 1=1";
+        String from = "FROM mc_knowledge k JOIN mc_material m ON m.id = k.material_id WHERE m.archived_at "
+                + (archived ? "IS NOT NULL" : "IS NULL");
         if (!trim(query).isBlank()) {
             from += " AND (INSTR(LOWER(k.title), :q) > 0 OR INSTR(LOWER(m.title), :q) > 0)";
             filters.put("q", query.strip().toLowerCase(Locale.ROOT));
@@ -65,6 +77,21 @@ class KnowledgeWorkflow {
             from += " AND k.material_id = :material";
             filters.put("material", materialId);
         }
+        if (!trim(classificationId).isBlank()) {
+            from += """
+                     AND EXISTS (SELECT 1 FROM mc_material_class a JOIN mc_classification c ON c.id=a.class_id
+                        WHERE a.material_id=m.id AND (c.id=:classification OR c.parent_id=:classification))
+                    """;
+            filters.put("classification", classificationId);
+        }
+        if (!trim(typeCode).isBlank()) {
+            from += " AND k.type_code=:typeCode";
+            filters.put("typeCode", typeCode);
+        }
+        if (!trim(knowledgeClass).isBlank()) {
+            from += " AND k.knowledge_class=:knowledgeClass";
+            filters.put("knowledgeClass", knowledgeClass);
+        }
         from += Classifications.subjectScope("k.material_id", subjectId, filters);
         if ("SUBMITTED".equals(submission)) from += " AND k.status <> 'DRAFT'";
         if ("UNSUBMITTED".equals(submission)) from += " AND k.status = 'DRAFT'";
@@ -74,26 +101,27 @@ class KnowledgeWorkflow {
         if ("EDITABLE".equals(human)) {
             from += " AND k.status IN ('DRAFT','RETURNED')";
         } else if ("REVIEWED".equals(human)) {
-            from += " AND k.status IN ('APPROVED','SYNCING','SYNC_FAILED','SYNCED','RETURNED')";
+            from += " AND k.status IN ('APPROVED','SYNCING','SYNC_FAILED','SYNCED','RETURNED','SYNC_DECLINED')";
         } else if ("UNREVIEWED".equals(human)) {
             from += " AND k.status IN ('PENDING','DRAFT','REFERENCE_ONLY')";
         } else if (!trim(human).isBlank()) {
-            from += " AND (CASE WHEN k.status IN ('DRAFT','PENDING','RETURNED','REFERENCE_ONLY') THEN k.status ELSE 'APPROVED' END) = :human";
+            from += " AND (CASE WHEN k.status IN ('DRAFT','PENDING','RETURNED','REFERENCE_ONLY','SYNC_DECLINED') THEN k.status ELSE 'APPROVED' END) = :human";
             filters.put("human", human);
         }
         if ("READY".equals(sync)) {
             from += " AND k.status = 'APPROVED'";
         } else if (!trim(sync).isBlank()) {
             from += " AND (CASE WHEN k.sync_phase = 'SKIPPED' THEN 'SKIPPED' WHEN k.status IN"
-                    + " ('SYNCING','SYNCED','SYNC_FAILED','REFERENCE_ONLY') THEN k.status ELSE 'UNSYNCED' END) = :sync";
+                    + " ('SYNCING','SYNCED','SYNC_FAILED','REFERENCE_ONLY','SYNC_DECLINED') THEN k.status ELSE 'UNSYNCED' END) = :sync";
             filters.put("sync", sync);
         }
         String columns = """
-                k.id, k.material_id, m.title material_title, k.title, k.type_code, k.status, k.updated_at, k.remote_id, k.sync_phase, k.business_release,
+                k.id, k.material_id, m.title material_title, k.title, k.type_code, k.knowledge_class, k.status, k.updated_at, k.remote_id, k.sync_phase, k.business_release,
+                (SELECT MAX(v.version_no) FROM mc_sync_version v WHERE v.knowledge_id = k.id) version_no,
                 (SELECT e.actor FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
-                  AND e.action IN ('APPROVED','RETURNED') ORDER BY e.occurred_at DESC, e.id DESC FETCH FIRST 1 ROW ONLY) reviewer,
+                  AND e.action IN ('APPROVED','RETURNED','SYNC_DECLINED') ORDER BY e.occurred_at DESC, e.id DESC FETCH FIRST 1 ROW ONLY) reviewer,
                 (SELECT MAX(e.occurred_at) FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
-                  AND e.action IN ('APPROVED','RETURNED')) reviewed_at,
+                  AND e.action IN ('APPROVED','RETURNED','SYNC_DECLINED')) reviewed_at,
                 (SELECT MAX(e.occurred_at) FROM mc_event e WHERE e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
                   AND e.action = 'AI_REVIEW') ai_reviewed_at,
                 CASE WHEN k.status <> 'SYNCED' THEN NULL WHEN k.sync_phase = 'SKIPPED' THEN 'SKIP'
@@ -106,7 +134,7 @@ class KnowledgeWorkflow {
     }
 
     Detail create(String materialId, DraftInput request, String actor) {
-        Material material = store.material(materialId);
+        Material material = store.requireActive(store.material(materialId));
         requireSource(material,request.typeCode());
         if (material.status() != MaterialStatus.APPROVED) throw conflict("请先完成原文审核");
         templates.availableForCollection(request.typeCode());
@@ -131,8 +159,7 @@ class KnowledgeWorkflow {
 
     private String claimParse(String materialId, KnowledgeTemplates.Schema schema, String attempt, boolean reuseExisting) {
         return transactions.execute(tx -> {
-            store.db().sql("SELECT id FROM mc_material WHERE id=:material FOR UPDATE").param("material",materialId)
-                    .query(String.class).optional().orElseThrow(() -> missing("原文资料已移除"));
+            store.lockActiveMaterial(materialId);
             var params = new MapSqlParameterSource().addValue("material",materialId)
                     .addValue("type",schema.category().code()).addValue("category",schema.knowledgeClass(),Types.VARCHAR);
             if (reuseExisting) {
@@ -189,8 +216,7 @@ class KnowledgeWorkflow {
         String usedModel = modelName;
         try {
             return transactions.execute(tx -> {
-                store.db().sql("SELECT id FROM mc_material WHERE id=:id FOR UPDATE").param("id",materialId)
-                        .query(String.class).optional().orElseThrow(() -> missing("原文资料已移除"));
+                store.lockActiveMaterial(materialId);
                 store.db().sql("""
                     INSERT INTO mc_knowledge (id, material_id, title, type_code, knowledge_class, summary, template_json,
                       fields_json, relations_json, status, revision, model_name, created_at, updated_at)
@@ -232,7 +258,7 @@ class KnowledgeWorkflow {
     @Transactional
     Detail edit(String id, DraftEdit input, String actor) {
         Knowledge knowledge = store.knowledge(id);
-        Material material = store.material(knowledge.materialId());
+        Material material = store.lockActiveMaterial(knowledge.materialId());
         var selectedSchema = schema(knowledge);
         if (input.knowledgeClass() != null && !trim(knowledge.knowledgeClass()).equals(trim(input.knowledgeClass()))) {
             if (knowledge.updateTargetId() != null) throw conflict("修订稿须沿用原业务知识类别");
@@ -259,10 +285,11 @@ class KnowledgeWorkflow {
     @Transactional
     Detail submit(String id, int revision, String actor) {
         Knowledge existing = store.knowledge(id);
+        Material material = store.lockActiveMaterial(existing.materialId());
         requireText(existing.summary(), "请填写摘要后再提交审核");
         var schema = schema(existing);
         validateBusinessValues(existing,false);
-        if (!store.material(existing.materialId()).pdf() && !schema.rules().isEmpty()) {
+        if (!material.pdf() && !schema.rules().isEmpty()) {
             var values = fields(existing);
             for (var field : schema.fields()) {
                 var rule = schema.rules().get(field.id());
@@ -290,7 +317,7 @@ class KnowledgeWorkflow {
         if (draft.status() != KnowledgeStatus.PENDING || draft.revision() != revision) {
             throw conflict("仅当前待人工审核的版本可发起预审核");
         }
-        Material material = store.material(draft.materialId());
+        Material material = store.requireActive(store.material(draft.materialId()));
         String text = material.pdf() ? reader.pdfForAnalysis(store.bytes(material)) : store.extractedText(material);
         var result = model.review(draft, material, text);
         store.event("KNOWLEDGE", id, "AI_REVIEW", actor, "版本 " + revision + " · " + result.model() + " · "
@@ -301,6 +328,7 @@ class KnowledgeWorkflow {
     @Transactional
     Detail reopen(String id, int revision, String note, String actor) {
         String reason = requireText(note, "请填写退回修改原因");
+        store.lockActiveMaterial(store.knowledge(id).materialId());
         changed(store.db().sql("""
                 UPDATE mc_knowledge SET status = 'RETURNED', revision = revision + 1, updated_at = :now,
                   sync_phase = NULL, sync_error = NULL WHERE id = :id AND revision = :revision

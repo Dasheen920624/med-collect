@@ -1,7 +1,7 @@
 export const materialStates = { PENDING: '待审核', APPROVED: '已通过', RETURNED: '已退回' }
 export const knowledgeStates = {
   DRAFT: '草稿', PENDING: '待审核', APPROVED: '待同步', RETURNED: '已退回',
-  SYNCING: '同步中', SYNC_FAILED: '同步异常', SYNCED: '已同步', REFERENCE_ONLY: '业务原有 · 仅对照',
+  SYNCING: '同步中', SYNC_FAILED: '同步异常', SYNCED: '已同步', REFERENCE_ONLY: '业务原有 · 仅对照', SYNC_DECLINED: '不予同步',
 }
 export const runStates = { RUNNING: '执行中', SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败' }
 export const modes = { URL: '指定网址下载', EUROPE_PMC: '文献检索', WEB: '全网搜索', UPLOAD: '手工上传', BUSINESS: '4.23 业务文献' }
@@ -15,7 +15,7 @@ export const relations = {
   nurseIds: '护理分类', ruleIds: '关联规则',
 }
 export const actions = {
-  PROVENANCE_SEPARATED: '分离知识出处与正文',
+  PROVENANCE_SEPARATED: '分离知识出处与正文', ARCHIVED: '移出工作台', SYNC_DECLINED: '确认不予同步', SIMILAR_ACCEPTED: '核对相似资料后同意新增',
   AI_REVIEW: 'AI 预审核', CLASSIFIED: '资料分类', CREATED: '创建', UPDATED: '更新', CAPTURED: '采集入库', PARSED: '模型解析', EDITED: '保存草稿',
   PENDING: '提交人工审核', APPROVED: '审核通过', RETURNED: '审核退回', SYNC_STARTED: '发起同步',
   SYNC_POSTING: '请求新增知识', SYNC_CREATED: '取得业务主键', SYNC_UPLOADED: '上传 PDF',

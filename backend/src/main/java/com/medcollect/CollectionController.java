@@ -69,8 +69,9 @@ class CollectionController {
     List<CollectionService.SourceRow> sources() { return collection.sources(); }
 
     @GetMapping("/sources/{id}")
-    Map<String, Object> source(@PathVariable String id) {
-        return Map.of("source", store.source(id), "tasks", collection.tasks(null, null, id, null, null, null, null, null, 1, 100),
+    Map<String, Object> source(@PathVariable String id,
+                               @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "100") int size) {
+        return Map.of("source", store.source(id), "tasks", collection.tasks(null, null, id, null, null, null, null, null, page, size),
                 "events", store.events("SOURCE", id));
     }
 
@@ -109,7 +110,9 @@ class CollectionController {
 
     @GetMapping("/tasks/{id}")
     Map<String, Object> task(@PathVariable String id) {
-        return Map.of("task", store.task(id), "runs", collection.runs(id, 1, 30).rows(), "events", store.events("TASK", id),
+        var runs = collection.runs(id, 1, 30).rows();
+        var latestResults = runs.isEmpty() ? List.<RunResult>of() : collection.results(runs.getFirst().id()).stream().limit(8).toList();
+        return Map.of("task", store.task(id), "runs", runs, "latestResults", latestResults, "events", store.events("TASK", id),
                 "sourceIds", collection.taskSourceIds(id), "urls", collection.taskUrls(id), "materialTypeIds",collection.materialTypes(id));
     }
 
@@ -164,9 +167,10 @@ class CollectionController {
 
     @GetMapping("/materials/{id}")
     Map<String, Object> material(@PathVariable String id) {
-        return Map.of("material", detail(store.material(id)), "runs", materials.runs(id), "parseState", materials.parseState(id),
+        var material = store.material(id);
+        return Map.of("material", detail(material), "runs", materials.runs(id), "parseState", materials.parseState(id),
                 "events", store.events("MATERIAL", id), "classificationIds", classifications.materialClasses(id),
-                "knowledge", knowledge.list(null, null, id, null, null, null, null, null, 1, 20));
+                "knowledge", knowledge.forMaterial(id, material.archivedAt() != null), "removal", removal.options(material));
     }
 
     @PostMapping(value = "/materials/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -181,7 +185,7 @@ class CollectionController {
         Material material = store.material(id);
         boolean inline = preview && material.pdf();
         var disposition = (inline ? ContentDisposition.inline() : ContentDisposition.attachment())
-                .filename(material.fileName(), StandardCharsets.UTF_8).build();
+                .filename(store.displayFileName(material), StandardCharsets.UTF_8).build();
         return ResponseEntity.ok().cacheControl(CacheControl.noStore())
                 .contentType(inline ? MediaType.APPLICATION_PDF : MediaType.APPLICATION_OCTET_STREAM)
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
@@ -204,5 +208,11 @@ class CollectionController {
         removal.remove(id,input.revision(),input.reason(),actor.getName());
     }
 
-    private MaterialDetail detail(Material material) { return new MaterialDetail(material, store.extractedText(material)); }
+    @PostMapping("/materials/{id}/archive")
+    @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    void archive(@PathVariable String id, @Valid @RequestBody Remove input, Principal actor) {
+        removal.archive(id,input.revision(),input.reason(),actor.getName());
+    }
+
+    private MaterialDetail detail(Material material) { return new MaterialDetail(material, store.extractedText(material), store.displayFileName(material)); }
 }

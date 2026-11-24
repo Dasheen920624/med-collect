@@ -154,6 +154,8 @@ function taskActions(task, latest = task.latestRun) {
   return { edit, label, inList: task.enabled && !completed }
 }
 const detailActions = computed(() => selectedTask.value ? taskActions(selectedTask.value.task, selectedTask.value.runs[0]) : {})
+const resultLabel = entry => entry.archivedAt ? 'ARCHIVED' : entry.status
+const detailResultStates = { ...resultStates, ARCHIVED: '原文已移除' }
 function taskName(id) { return table.value.rows.find(task => task.id === id)?.name || '查看执行详情' }
 
 async function run(task) {
@@ -329,7 +331,7 @@ function resultText(r) {
       <div><dt>下次执行</dt><dd>{{ date(selectedTask.task.nextRunAt, true) }}</dd></div>
     </dl>
     <section class="form-section">
-      <h3>最近执行</h3>
+      <h3>原文获取记录</h3>
       <p v-if="!selectedTask.runs.length" class="muted">暂无执行记录</p>
       <ul v-else class="simple-list"><li v-for="entry in selectedTask.runs" :key="entry.id">
         <button class="link" @click="openRun(entry.id)">{{ date(entry.startedAt, true) }}</button>
@@ -337,7 +339,16 @@ function resultText(r) {
         <StateBadge :state="entry.status" :labels="runStates" />
       </li></ul>
     </section>
-    <Events :events="selectedTask.events" />
+    <section v-if="selectedTask.latestResults?.length" class="form-section">
+      <div class="toolbar"><h3>最近一次采集结果</h3><button class="link" @click="openRun(selectedTask.runs[0].id)">查看全部结果</button></div>
+      <ul class="simple-list"><li v-for="entry in selectedTask.latestResults" :key="entry.id">
+        <button v-if="entry.materialId" class="link" @click="emit('navigate','materials',entry.materialId)">{{ entry.title }}</button>
+        <a v-else-if="entry.url" :href="entry.url" target="_blank" rel="noopener noreferrer">{{ entry.title || '查看来源' }}</a>
+        <span v-else>{{ entry.title }}</span>
+        <StateBadge :state="resultLabel(entry)" :labels="detailResultStates" />
+      </li></ul>
+    </section>
+    <details class="raw-text"><summary>操作记录</summary><Events :events="selectedTask.events" /></details>
     <template v-if="session.admin && detailActions.label" #footer>
       <button v-if="detailActions.edit" class="button secondary" :disabled="busy" @click="edit(selectedTask.task)">编辑任务</button>
       <button class="button primary" :disabled="busy" @click="run(selectedTask.task)">
@@ -415,7 +426,7 @@ function resultText(r) {
               <button v-if="entry.materialId" class="link" @click="emit('navigate', 'materials', entry.materialId)">{{ entry.title || '查看原文' }}</button>
               <a v-else-if="entry.url" :href="entry.url" target="_blank" rel="noopener noreferrer" class="table-url">{{ entry.title || entry.url }}</a>
               <span v-else>{{ entry.title || '—' }}</span></td>
-            <td><StateBadge :state="entry.status" :labels="resultStates" /></td><td>{{ entry.note || '—' }}</td>
+            <td><StateBadge :state="resultLabel(entry)" :labels="detailResultStates" /></td><td>{{ entry.note || '—' }}</td>
           </tr></tbody></table>
       </div>
       <p v-else class="muted">{{ selectedRun.run.status === 'RUNNING' ? '等待采集结果…' : '暂无资料明细' }}</p>

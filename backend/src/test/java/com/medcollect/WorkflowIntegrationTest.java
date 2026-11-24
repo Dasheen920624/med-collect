@@ -913,6 +913,82 @@ class WorkflowIntegrationTest {
     }
 
     @Test
+    void removesASyncedOriginalFromActiveViewsWhilePreservingItsReceipt() throws Exception {
+        String remote = "archived-fixture-article";
+        String originalId = createThroughCollector(remote,"31","17");
+        String original = "/api/knowledge/"+originalId;
+        String materialId = getBody(original).path("material").path("id").asText();
+        String material = "/api/materials/"+materialId;
+        var revision = postBody(original+"/revisions",Map.of("revision",currentRevision(original)));
+        String draft = "/api/knowledge/"+revision.path("id").asText();
+        mvc.perform(put(draft).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(Map.of(
+                "revision",revision.path("revision").asInt(),"title","可核对的中文文献题名","summary","已保存的摘要。")))
+                .with(user("reviewer").roles("REVIEWER")).with(csrf())).andExpect(status().isOk());
+        var before = getBody(material);
+        assertThat(before.path("removal").path("purge").asBoolean()).isFalse();
+        assertThat(before.path("material").path("displayFileName").asText()).isEqualTo("可核对的中文文献题名.txt");
+        var p = json.writeValueAsBytes(Map.of("revision",before.path("material").path("revision").asInt(),"reason","移除测试资料"));
+        mvc.perform(post(material+"/archive").contentType(MediaType.APPLICATION_JSON).content(p)
+                .with(user("reviewer").roles("REVIEWER")).with(csrf())).andExpect(status().isForbidden());
+        var nativeBefore = Map.copyOf(BUSINESS_RECORDS.get(remote));
+        mvc.perform(post(material+"/archive").contentType(MediaType.APPLICATION_JSON).content(p)
+                .with(user("collector").roles("ADMIN")).with(csrf())).andExpect(status().isNoContent());
+        var archived = getBody(material);
+        assertThat(archived.path("material").path("archiveReason").asText()).isEqualTo("移除测试资料");
+        assertThat(archived.path("knowledge").path("total").asInt()).isEqualTo(2);
+        assertThat(getBody("/api/materials?query=collector-seed-"+remote).path("total").asInt()).isZero();
+        assertThat(getBody("/api/knowledge?materialId="+materialId).path("total").asInt()).isZero();
+        assertThat(getBody(original).path("canRevise").asBoolean()).isFalse();
+        var file = mvc.perform(get(material+"/original").with(user("reviewer").roles("REVIEWER")))
+                .andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(org.springframework.http.ContentDisposition.parse(file.getHeader("Content-Disposition")).getFilename())
+                .isEqualTo("可核对的中文文献题名.txt");
+        assertThat(getBody(original+"/business-records/"+remote).path("record").path("id").asText()).isEqualTo(remote);
+        expectConflict(material+"/drafts",Map.of("typeCode","31","knowledgeClass","17","useAi",false));
+        expectConflict(draft+"/submit",Map.of("revision",currentRevision(draft)));
+        expectConflict(original+"/revisions",Map.of("revision",currentRevision(original)));
+        assertThat(BUSINESS_RECORDS.get(remote)).isEqualTo(nativeBefore);
+    }
+
+    @Test
+    void showsRelatedBusinessMaterialAndRecordsAnExplicitSyncChoice() throws Exception {
+        String title = "示例高血压用药评估指南2025版";
+        String remote = "related-published-guide";
+        var old = businessRecord(remote,"示例高血压用药评估指南2024版","https://example.org/guide-2024");
+        old.put("releaseStatus","1");
+        old.put("source","参考来源");
+        BUSINESS_RECORDS.put(remote,old);
+        var uploaded = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file",
+                "original.txt","text/plain","Fictional guide".getBytes(StandardCharsets.UTF_8))).param("title",title)
+                .with(user("collector").roles("ADMIN")).with(csrf())));
+        String material = "/api/materials/"+uploaded.path("materialId").asText();
+        postBody(material+"/decision",Map.of("revision",1,"approved",true,"sourceAbstract","示例摘要。"));
+        var draft = postBody(material+"/drafts",Map.of("typeCode","31","knowledgeClass","17","useAi",false));
+        String path = "/api/knowledge/"+draft.path("id").asText();
+        postBody(path+"/submit",Map.of("revision",draft.path("revision").asInt()));
+        var preview = postBody(path+"/sync-review",Map.of("revision",currentRevision(path)));
+        assertThat(preview.path("operation").asText()).isEqualTo("CREATE");
+        assertThat(preview.path("similarityChecked").asBoolean()).isTrue();
+        assertThat(preview.path("related").findValuesAsText("id")).contains(remote);
+        var reference = getBody(path+"/business-records/"+remote);
+        assertThat(reference.path("summary").asText()).isEqualTo("Old reviewed abstract");
+        assertThat(reference.path("category").asText()).contains("期刊");
+        assertThat(reference.path("enabled").asText()).isEqualTo("1");
+        assertThat(reference.path("publication").asText()).isEqualTo("1");
+        expectConflict(path+"/decision",Map.of("revision",currentRevision(path),"approved",true,"reviewId",preview.path("id").asText()));
+        var declined = postBody(path+"/sync-decline",Map.of("revision",currentRevision(path),
+                "reviewId",preview.path("id").asText(),"note","沿用现有业务资料"));
+        assertThat(declined.path("status").asText()).isEqualTo("SYNC_DECLINED");
+        assertThat(getBody(path).path("syncReview").path("related").findValuesAsText("id")).contains(remote);
+        expectConflict(path+"/sync",Map.of("revision",currentRevision(path)));
+        var comparedAgain = postBody(path+"/sync-review",Map.of("revision",currentRevision(path)));
+        var approved = postBody(path+"/decision",Map.of("revision",currentRevision(path),"approved",true,
+                "reviewId",comparedAgain.path("id").asText(),"acceptSimilar",true));
+        assertThat(approved.path("status").asText()).isEqualTo("APPROVED");
+        assertThat(BUSINESS_RECORDS.get(remote)).isEqualTo(old);
+    }
+
+    @Test
     void retriesShortLivedSourceOutages() throws Exception {
         SOURCE_ATTEMPTS.set(0);
         assertThat(sourceHttp.get(base() + "/source-transient").bytes()).isNotEmpty();

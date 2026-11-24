@@ -25,7 +25,18 @@ class KnowledgeController {
     private final ModelService model;
 
     record Change(@Positive int revision, @Size(max = 1000) String note) {}
+    record Decline(@Positive int revision, @Size(max = 36) String reviewId, @Size(max = 1000) String note) {}
     record ReviewInput(@Positive int revision, @Size(max = 80) String targetId, boolean manual) {}
+
+    @GetMapping("/knowledge/{id}/business-records/{remoteId}")
+    BusinessKnowledge.Reference businessRecord(@PathVariable String id, @PathVariable String remoteId) {
+        return reviews.reference(id, remoteId);
+    }
+
+    @PostMapping("/knowledge/{id}/sync-decline")
+    KnowledgeWorkflow.Detail decline(@PathVariable String id, @Valid @RequestBody Decline input, Principal actor) {
+        return reviews.decline(id, input.revision(), input.reviewId(), input.note(), actor.getName());
+    }
 
     KnowledgeController(KnowledgeWorkflow workflow, KnowledgeTemplates templates,
                         Store store, SyncService sync, SyncReviews reviews, ModelService model) {
@@ -54,8 +65,12 @@ class KnowledgeController {
                              @RequestParam(required = false) String materialId, @RequestParam(required = false) String human,
                              @RequestParam(required = false) String sync, @RequestParam(required = false) String subjectId,
                              @RequestParam(required = false) String submission, @RequestParam(required = false) String publication,
+                             @RequestParam(required = false) @Size(max = 36) String classificationId,
+                             @RequestParam(required = false) @Size(max = 20) String typeCode,
+                             @RequestParam(required = false) @Size(max = 60) String knowledgeClass,
                              @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "20") int size) {
-        return workflow.list(query, status, materialId, human, sync, subjectId, submission, publication, page, size);
+        return workflow.list(query, status, materialId, human, sync, subjectId, submission, publication,
+                classificationId, typeCode, knowledgeClass, page, size);
     }
 
     @GetMapping("/knowledge/{id}")
@@ -66,7 +81,8 @@ class KnowledgeController {
         result.put("knowledge", knowledge);
         result.put("material", new MaterialList(original.id(), original.title(),
                         original.formatCode(), original.fileName(), original.sourceUrl(), original.sourceName(),
-                        original.capturedAt(), original.status(), original.fetchedUrl(), KnowledgeText.citation(original)));
+                        original.capturedAt(), original.status(), original.fetchedUrl(), KnowledgeText.citation(original),
+                        original.archivedAt(), original.archivedBy(), original.archiveReason(), store.displayFileName(original)));
         result.put("events", store.events("KNOWLEDGE", id));
         var draft = store.knowledge(id);
         result.put("syncReview", reviews.preview(draft));

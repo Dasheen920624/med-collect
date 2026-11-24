@@ -19,7 +19,14 @@
 
 服务器上的部署文档和交接记录为 `/zoesoft/med-collect/deployment.md` 与 `/zoesoft/med-collect/handoff.md`。
 
-现网入口为 [3.27 医疗文献采集工作台](http://192.168.3.27:18085/)。本次发行镜像为 `med-collect:0.1.13-20261124-b2d50a57b3de`，JAR SHA-256 为 `b2d50a57b3de5951f9245aa8d99ba2ca1fe559728dd8ad6662a8a6ac610af24d`。上一发行是 `med-collect:0.1.12-20261124-ed7dbb757b61`。切换前先读取 `release.env` 和 `previous.env` 核实现网与回退目标，按本文回滚流程操作。
+现网运行 `med-collect:0.1.14-20261124-9a8acc35ecaf`，JAR SHA-256 为 `9a8acc35ecaf049682114408a2ab6a6ee9284e636abccd1ac5cb19085d84d7c0`。现网和上一发行标识分别记录在 `release.env` 与 `previous.env`。[3.27 医疗文献采集工作台](http://192.168.3.27:18085/)
+
+## 0.1.14 原件移除与相似资料审核
+
+- Liquibase 012 在 `MC_MATERIAL` 增加 `ARCHIVED_AT`、`ARCHIVED_BY`、`ARCHIVE_REASON`。管理员从原文详情移除已有审批或同步历史的资料时，应用调用 `POST /api/materials/{id}/archive`。原文、解析、审核列表与概览统计排除已移除资料，历史详情及同步回执作为只读记录保存。无保留依赖的原件仍走永久移除接口。
+- 业务近似查询在同一类型和子类范围使用标题片段找候选，再按规范化标题比较。匹配相似资料时，审核人可明确确认新增，或填写原因选择「不予同步」。已保存的旧查重单可点击「重新查重」补查。同步准备写入前复核业务匹配，变化时回到待审。停用位置提示按 4.23 业务目录显示，停用由具备权限的审核人员在 4.23 办理。
+- 原件预览、下载和新绑定的业务附件统一采用可读文件名。优先取原文中文题名或已有中文知识标题，沿用实际文件格式后缀。原件卷路径及实际文件指纹用于恢复核验。
+- 发布验收应核对移除记录从活动列表消失且历史回执仍可读，核实 PDF、HTML 的文件链接和下载名，检查旧查重补查和不予同步状态。已有归档或不予同步记录的 Oracle schema 须使用支持这两项状态的 0.1.14 或后续发行恢复。
 
 ## 0.1.12 至 0.1.13 升级验收
 
@@ -94,7 +101,7 @@ docker compose --env-file release.env up -d --force-recreate --wait --wait-timeo
 
 ## 知识同步查重与版本记录
 
-在「知识审核管理」打开待审稿，点击「检查重复与差异」，核对目标知识及字段对照。指南、书籍、期刊在所选类型和子类内以 DOI 或规范化标题匹配。疾病、检验等结构化知识按业务知识标题匹配，同篇论文可为不同知识提供依据。多个候选由审核人选择。名称有差异时可以查询同类型和子类的业务知识并指定目标；人工指定保留业务标题，显示实际要修改的字段。查重结果和审批绑定到当前稿件修订号。
+在「知识审核管理」打开待审稿，点击「核对重复与相似资料」，核对目标知识及字段对照。指南、书籍、期刊在所选类型和子类内以 DOI 或规范化标题匹配。疾病、检验等结构化知识按业务知识标题匹配，同篇论文可为不同知识提供依据。多个候选由审核人选择。名称有差异时可以查询同类型和子类的业务知识并指定目标，人工指定保留业务标题并显示字段差异。查重结果和审批绑定到当前稿件修订号。
 
 | 查重结果 | 审核通过后的处理 |
 | --- | --- |
@@ -186,7 +193,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.13'
+$version = '0.1.14'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)

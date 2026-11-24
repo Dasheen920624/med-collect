@@ -52,6 +52,44 @@ class Store {
         return find("mc_material", id, Material.class, "原文资料不存在");
     }
 
+    Material lockActiveMaterial(String id) {
+        var material = db.sql("SELECT * FROM mc_material WHERE id = :id FOR UPDATE").param("id", id)
+                .query(Material.class).optional().orElseThrow(() -> missing("原文资料不存在"));
+        return requireActive(material);
+    }
+
+    Material requireActive(Material material) {
+        if (material.archivedAt() != null) throw conflict("这份原文已移除，仅供查阅历史记录");
+        return material;
+    }
+
+    String displayFileName(Material material) {
+        String extension = switch (material.formatCode()) {
+            case "METADATA" -> ".json";
+            default -> "." + material.formatCode().toLowerCase(java.util.Locale.ROOT);
+        };
+        String name = material.title();
+        if (!hasChinese(name)) {
+            var titles = db.sql("""
+                    SELECT title FROM mc_knowledge WHERE material_id=:id
+                    ORDER BY CASE WHEN status IN ('APPROVED','SYNCED') THEN 0 ELSE 1 END, updated_at DESC, id
+                    FETCH FIRST 20 ROWS ONLY
+                    """).param("id", material.id()).query(String.class).list();
+            name = titles.stream().filter(this::hasChinese).findFirst()
+                    .orElseGet(() -> hasChinese(material.fileName()) ? material.fileName() : material.title());
+        }
+        String safe = trim(name).replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", " ").replaceAll("\\s+", " ").strip();
+        if (safe.toLowerCase(java.util.Locale.ROOT).endsWith(extension)) safe = safe.substring(0, safe.length() - extension.length());
+        safe = limit(safe, 100).replaceFirst("[ .]+$", "");
+        if (safe.isBlank()) safe = "文献原件";
+        if (safe.matches("(?i)CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]")) safe = "文献 " + safe;
+        return safe + extension;
+    }
+
+    private boolean hasChinese(String text) {
+        return trim(text).codePoints().anyMatch(c -> Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN);
+    }
+
     Knowledge knowledge(String id) {
         return find("mc_knowledge", id, Knowledge.class, "知识稿件不存在");
     }
@@ -150,12 +188,13 @@ class Store {
 
     Dashboard dashboard(String subjectId) {
         var params = new java.util.HashMap<String, Object>();
-        String materials = "mc_material m WHERE 1=1" + Classifications.subjectScope("m.id", subjectId, params);
-        String knowledge = "mc_knowledge k WHERE 1=1" + Classifications.subjectScope("k.material_id", subjectId, params);
+        String materials = "mc_material m WHERE m.archived_at IS NULL" + Classifications.subjectScope("m.id", subjectId, params);
+        String knowledge = "mc_knowledge k JOIN mc_material m ON m.id = k.material_id WHERE m.archived_at IS NULL"
+                + Classifications.subjectScope("k.material_id", subjectId, params);
         String tasks = "mc_task t WHERE 1=1" + Classifications.taskScope(subjectId, params);
         return new Dashboard(count(tasks, params), count(materials + " AND format_code <> 'METADATA'", params),
-                count(materials + " AND status = 'PENDING'", params), count(knowledge + " AND status = 'PENDING'", params),
-                count(knowledge + " AND status = 'SYNCED'", params), count(materials + " AND format_code = 'METADATA'", params),
+                count(materials + " AND m.status = 'PENDING'", params), count(knowledge + " AND k.status = 'PENDING'", params),
+                count(knowledge + " AND k.status = 'SYNCED'", params), count(materials + " AND format_code = 'METADATA'", params),
                 count(materials + " AND format_code <> 'METADATA' AND NOT EXISTS"
                         + " (SELECT 1 FROM mc_knowledge k WHERE k.material_id = m.id)", params),
                 count(knowledge + " AND k.status = 'APPROVED'", params),count(knowledge + " AND k.status = 'SYNC_FAILED'", params),

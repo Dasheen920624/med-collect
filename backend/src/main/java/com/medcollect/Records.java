@@ -20,7 +20,7 @@ final class Records {
     enum ScheduleMode { MANUAL, INTERVAL, ONCE, DAILY }
     enum AccessState { PUBLIC, PENDING, AUTHORIZED }
     enum MaterialStatus { PENDING, APPROVED, RETURNED }
-    enum KnowledgeStatus { DRAFT, PENDING, APPROVED, RETURNED, SYNCING, SYNC_FAILED, SYNCED, REFERENCE_ONLY }
+    enum KnowledgeStatus { DRAFT, PENDING, APPROVED, RETURNED, SYNCING, SYNC_FAILED, SYNCED, REFERENCE_ONLY, SYNC_DECLINED }
     enum RunStatus { RUNNING, SUCCEEDED, PARTIAL, FAILED }
 
     record Page<T>(List<T> rows, long total, int page, int size) {}
@@ -42,33 +42,35 @@ final class Records {
     record Run(String id, String taskId, RunStatus status, String actor, long startedAt, Long finishedAt,
                int newCount, int duplicateCount, int failureCount, String note, String parentRunId, int metadataCount) {}
     record RunResult(String id, String runId, String materialId, String title, String url, String status, String note,
-                     String sourceId) {}
+                     String sourceId, Long archivedAt) {}
     record CandidateSelection(@NotNull @Size(min = 1, max = 100) List<@NotBlank @Size(max = 36) String> resultIds) {}
 
     record RunOverview(String taskId, String id, RunStatus status, int newCount, int duplicateCount,
                        int failureCount, int metadataCount, int candidateCount) {}
     record TaskSummary(@JsonUnwrapped Task task, RunOverview latestRun) {}
     record MaterialList(String id, String title, String formatCode, String fileName, String sourceUrl,
-                        String sourceName, long capturedAt, MaterialStatus status, String fetchedUrl, String citation) {}
+                        String sourceName, long capturedAt, MaterialStatus status, String fetchedUrl, String citation,
+                        Long archivedAt, String archivedBy, String archiveReason, String displayFileName) {}
     record Material(String id, String fingerprint, String sha256, String title, String formatCode, String fileName,
                     String mimeType, long sizeBytes, String sourceUrl, String fetchedUrl, String sourceName,
                     String authors, String publisher, String published, String externalRef, String sourceAbstract,
-                    MaterialStatus status, long capturedAt, int revision) {
+                    MaterialStatus status, long capturedAt, int revision, Long archivedAt, String archivedBy, String archiveReason) {
         boolean pdf() { return "PDF".equals(formatCode); }
     }
-    record MaterialDetail(@JsonUnwrapped Material material, String rawText) {}
+    record MaterialDetail(@JsonUnwrapped Material material, String rawText, String displayFileName) {}
     record Acquired(String title, String formatCode, String fileName, String mimeType, String sourceUrl,
                     String fetchedUrl, String sourceName, String authors, String publisher, String published,
                     String externalRef, String sourceAbstract, String rawText, byte[] bytes) {}
     record Registration(String materialId, boolean duplicate) {}
     record Decision(@Positive int revision, boolean approved, @Size(max = 1000) String note,
-                    @Size(max = 36) String reviewId) {}
+                    @Size(max = 36) String reviewId, boolean acceptSimilar) {}
     record MaterialDecision(@Positive int revision, boolean approved, @Size(max = 1000) String note,
                             @Size(max = 12000) String sourceAbstract) {}
 
-    record KnowledgeList(String id, String materialId, String materialTitle, String title, String typeCode,
+    record KnowledgeList(String id, String materialId, String materialTitle, String title, String typeCode, String knowledgeClass,
                          KnowledgeStatus status, long updatedAt, String remoteId, String syncPhase,
-                         String reviewer, Long reviewedAt, Long aiReviewedAt, String deliveredOperation, String businessRelease) {}
+                         String reviewer, Long reviewedAt, Long aiReviewedAt, String deliveredOperation, String businessRelease,
+                         Integer versionNo) {}
     record Knowledge(String id, String materialId, String title, String typeCode, String knowledgeClass,
                      String summary, String templateJson, String fieldsJson, String relationsJson,
                      KnowledgeStatus status, int revision, String modelName, long createdAt, long updatedAt,

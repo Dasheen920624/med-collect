@@ -26,7 +26,8 @@ class SyncReviews {
     record Approved(String id, String reviewer, long approvedAt, BusinessKnowledge.Plan plan) {}
     record Preview(String id, boolean approved, BusinessKnowledge.Operation operation, String doi, boolean mayResetBusinessReview,
                    BusinessKnowledge.Candidate target, List<BusinessKnowledge.Candidate> candidates,
-                   List<BusinessKnowledge.Difference> differences) {}
+                   List<BusinessKnowledge.Difference> differences, List<BusinessKnowledge.Candidate> related,
+                   boolean similarityChecked) {}
     record Version(String id, String knowledgeId, String remoteId, int versionNo, BusinessKnowledge.Operation operation,
                    String reviewer, long approvedAt, long syncedAt) {}
     private record Recorded(String beforeJson, String afterJson, String changesJson) {}
@@ -57,11 +58,24 @@ class SyncReviews {
         return business.targets(draft,query,page);
     }
 
+    BusinessKnowledge.Reference reference(String id, String targetId) {
+        Knowledge draft = store.knowledge(id);
+        Preview comparison = preview(draft);
+        boolean fromReview = comparison != null && (comparison.candidates().stream().anyMatch(c -> targetId.equals(c.id()))
+                || comparison.related().stream().anyMatch(c -> targetId.equals(c.id()))
+                || (comparison.target() != null && targetId.equals(comparison.target().id())));
+        if (!targetId.equals(draft.remoteId()) && !targetId.equals(draft.updateTargetId()) && !fromReview) {
+            throw missing("当前稿件没有这条业务对照记录");
+        }
+        try { return business.reference(draft, targetId); }
+        catch (CdssClient.RemoteFailure e) { throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage(), e); }
+    }
+
     Preview prepare(String id, int revision, String targetId, boolean manual, String actor) {
         Knowledge draft = store.knowledge(id);
         requireReviewable(draft, revision);
         if (!cdss.configured()) throw conflict("请配置 4.23 业务账号后查重");
-        var material = store.material(draft.materialId());
+        var material = store.requireActive(store.material(draft.materialId()));
         var previousFields = workflow.fields(draft);
         var text = KnowledgeText.separate(draft.summary(),previousFields,material);
         requireText(text.summary(),"摘要只包含出处，请退回补充医学正文后再查重");
@@ -69,16 +83,19 @@ class SyncReviews {
         var proposed = separated ? draft.withText(text.summary(),write(text.fields())) : draft;
         BusinessKnowledge.Plan plan;
         try {
-            if (draft.status() == KnowledgeStatus.REFERENCE_ONLY && trim(draft.knowledgeClass()).isBlank()) {
-                var previous = review(id).map(row -> readPlan(row.planJson())).orElseThrow(() -> conflict("原业务对照记录缺失"));
+            var previous = review(id).map(row -> readPlan(row.planJson())).orElse(null);
+            boolean referenceOnly = draft.status() == KnowledgeStatus.REFERENCE_ONLY
+                    || (draft.status() == KnowledgeStatus.SYNC_DECLINED && previous != null && previous.operation() == REFERENCE_ONLY);
+            if (referenceOnly && trim(draft.knowledgeClass()).isBlank()) {
+                if (previous == null) throw conflict("原业务对照记录缺失");
                 if (previous.operation() != REFERENCE_ONLY || previous.target() == null ||
                         (!trim(targetId).isBlank() && !previous.target().id().equals(targetId))) {
                     throw conflict("未分类的历史对照稿只能复核原对照记录");
                 }
                 plan = business.reviewUnclassifiedReference(proposed,material,previous.target());
             } else {
-                if (draft.status() == KnowledgeStatus.REFERENCE_ONLY && trim(targetId).isBlank()) {
-                    var previous = review(id).map(row -> readPlan(row.planJson())).orElseThrow(() -> conflict("请重新选择业务对照记录"));
+                if (referenceOnly && trim(targetId).isBlank()) {
+                    if (previous == null || previous.target() == null) throw conflict("请重新选择业务对照记录");
                     targetId = previous.target().id();
                     manual = "人工指定同类业务知识".equals(previous.target().basis());
                 }
@@ -88,6 +105,7 @@ class SyncReviews {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage(), e);
         }
         return transactions.execute(tx -> {
+            store.lockActiveMaterial(draft.materialId());
             lockDraft(id);
             Knowledge current = store.knowledge(id);
             requireReviewable(current, revision);
@@ -118,6 +136,7 @@ class SyncReviews {
 
     @Transactional
     KnowledgeWorkflow.Detail decision(String id, Decision input, String actor) {
+        store.lockActiveMaterial(store.knowledge(id).materialId());
         lockDraft(id);
         if (store.knowledge(id).status() == KnowledgeStatus.REFERENCE_ONLY) throw conflict(SyncOrigins.PROTECTED);
         if (input.approved() && cdss.configured()) {
@@ -134,6 +153,12 @@ class SyncReviews {
                     || review.approvedAt() != null || plan.operation() == CHOOSE) {
                 throw conflict("请核对当前查重结果并明确选择业务记录后再审批");
             }
+            if (plan.operation() == CREATE && !plan.similarityChecked()) throw conflict("请补查 4.23 相似知识后再审批");
+            if (!plan.related().isEmpty()) {
+                if (!input.acceptSimilar()) throw conflict("请核对相似资料后明确选择是否继续同步");
+                store.event("KNOWLEDGE", id, "SIMILAR_ACCEPTED", actor,
+                        "确认按新知识同步 · " + String.join("、", plan.related().stream().map(BusinessKnowledge.Candidate::id).toList()));
+            }
             changed(store.db().sql("""
                     UPDATE mc_sync_review SET reviewer = :actor, approved_at = :now
                     WHERE knowledge_id = :id AND review_id = :review AND approved_at IS NULL
@@ -142,9 +167,31 @@ class SyncReviews {
         return workflow.decision(id, input, actor);
     }
 
+    @Transactional
+    KnowledgeWorkflow.Detail decline(String id, int revision, String reviewId, String note, String actor) {
+        String reason = requireText(note, "请填写不予同步的原因");
+        store.lockActiveMaterial(store.knowledge(id).materialId());
+        lockDraft(id);
+        Knowledge draft = store.knowledge(id);
+        requireReviewable(draft, revision);
+        var row = review(id).filter(r -> r.draftRevision() == revision && r.reviewId().equals(reviewId))
+                .orElseThrow(() -> conflict("查重结果已变化，请重新核对"));
+        var plan = readPlan(row.planJson());
+        if (plan.target() == null && plan.candidates().isEmpty() && plan.related().isEmpty()) throw conflict("当前稿件没有业务对照记录");
+        changed(store.db().sql("""
+                UPDATE mc_knowledge SET status='SYNC_DECLINED', revision=revision+1, sync_error=NULL, updated_at=:now
+                WHERE id=:id AND revision=:revision
+                """).param("now",store.now()).param("id",id).param("revision",revision).update());
+        store.db().sql("""
+                UPDATE mc_sync_review SET draft_revision=:revision, reviewer=NULL, approved_at=NULL WHERE knowledge_id=:id
+                """).param("revision",revision+1).param("id",id).update();
+        store.event("KNOWLEDGE",id,"SYNC_DECLINED",actor,reason);
+        return workflow.detail(id);
+    }
+
     Preview preview(Knowledge draft) {
         return review(draft.id()).filter(row -> switch (draft.status()) {
-            case PENDING, REFERENCE_ONLY -> row.draftRevision() == draft.revision();
+            case PENDING, REFERENCE_ONLY, SYNC_DECLINED -> row.draftRevision() == draft.revision();
             case APPROVED, SYNCING, SYNC_FAILED, SYNCED -> row.approvedAt() != null;
             default -> false;
         }).map(row -> view(row.reviewId(), row.approvedAt() != null, readPlan(row.planJson()),
@@ -157,11 +204,13 @@ class SyncReviews {
     }
 
     boolean canRevise(Knowledge draft) {
-        return draft.status() == KnowledgeStatus.SYNCED && origins.owns(draft.remoteId());
+        return draft.status() == KnowledgeStatus.SYNCED && origins.owns(draft.remoteId())
+                && store.material(draft.materialId()).archivedAt() == null;
     }
 
     @Transactional
     KnowledgeWorkflow.Detail revise(String originalId, int revision, String actor) {
+        store.lockActiveMaterial(store.knowledge(originalId).materialId());
         lockDraft(originalId);
         Knowledge original = store.knowledge(originalId);
         if (original.status() != KnowledgeStatus.SYNCED || original.remoteId() == null || original.revision() != revision) {
@@ -169,13 +218,15 @@ class SyncReviews {
         }
         origins.requireOwned(original.remoteId());
         String latest = store.db().sql("""
-                SELECT id FROM mc_knowledge WHERE remote_id = :target AND status = 'SYNCED'
-                ORDER BY updated_at DESC, id DESC FETCH FIRST 1 ROWS ONLY
+                SELECT k.id FROM mc_knowledge k JOIN mc_material m ON m.id=k.material_id
+                WHERE k.remote_id=:target AND k.status='SYNCED' AND m.archived_at IS NULL
+                ORDER BY k.updated_at DESC, k.id DESC FETCH FIRST 1 ROWS ONLY
                 """).param("target", original.remoteId()).query(String.class).single();
         if (!originalId.equals(latest)) lockDraft(latest);
         var existing = store.db().sql("""
-                SELECT id FROM mc_knowledge WHERE update_target_id = :target AND status <> 'SYNCED'
-                ORDER BY created_at DESC, id DESC FETCH FIRST 1 ROWS ONLY
+                SELECT k.id FROM mc_knowledge k JOIN mc_material m ON m.id=k.material_id
+                WHERE k.update_target_id=:target AND k.status<>'SYNCED' AND m.archived_at IS NULL
+                ORDER BY k.created_at DESC, k.id DESC FETCH FIRST 1 ROWS ONLY
                 """).param("target", original.remoteId())
                 .query(String.class).optional();
         if (existing.isPresent()) return workflow.detail(existing.get());
@@ -259,7 +310,7 @@ class SyncReviews {
         workflow.requireSource(store.material(draft.materialId()),draft.typeCode());
         if (draft.revision() != revision || draft.remoteId() != null || draft.syncPhase() != null
                 || !List.of(KnowledgeStatus.PENDING, KnowledgeStatus.APPROVED, KnowledgeStatus.SYNC_FAILED,
-                            KnowledgeStatus.REFERENCE_ONLY).contains(draft.status())) {
+                            KnowledgeStatus.REFERENCE_ONLY, KnowledgeStatus.SYNC_DECLINED).contains(draft.status())) {
             throw conflict("当前稿件状态或修订号已变化，请刷新后重试");
         }
     }
@@ -293,7 +344,9 @@ class SyncReviews {
         if (!completed && operation == UPDATE && (target == null || !target.collectorCreated())) operation = REFERENCE_ONLY;
         boolean mayReset = operation == UPDATE && (plan.before().path("isStart").asInt() != 0
                 || plan.before().path("auditStatus").asInt() != 0 || plan.before().path("releaseStatus").asInt() != 0);
-        return new Preview(id, approved && operation != REFERENCE_ONLY, operation, plan.doi(), mayReset, target, candidates, plan.differences());
+        var related = plan.related().stream().map(this::withCurrentOrigin).toList();
+        return new Preview(id, approved && operation != REFERENCE_ONLY, operation, plan.doi(), mayReset,
+                target, candidates, plan.differences(), related, plan.similarityChecked());
     }
 
     private BusinessKnowledge.Plan readPlan(String raw) {

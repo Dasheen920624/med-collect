@@ -51,6 +51,7 @@ class SyncService {
         requireWriteAuthority(current, reviews.approved(id).orElse(null));
         String token = id();
         transactions.executeWithoutResult(tx -> {
+            store.lockActiveMaterial(store.knowledge(id).materialId());
             if (!reviews.claimWriter(token, LEASE_MILLIS)) throw conflict("其他知识正在同步，请稍后重试");
             long now = store.now();
             changed(store.db().sql("""
@@ -74,7 +75,7 @@ class SyncService {
     private void synchronize(String id, String token, String actor) {
         try {
             Knowledge knowledge = owned(id, token);
-            Material material = store.material(knowledge.materialId());
+            Material material = store.requireActive(store.material(knowledge.materialId()));
             var schema = workflow.schema(knowledge);
             var approval = reviews.approved(id).orElse(null);
             requireWriteAuthority(knowledge, approval);
@@ -86,7 +87,7 @@ class SyncService {
                 return;
             }
             String remoteId = knowledge.remoteId();
-            if (remoteId == null) remoteId = saveRecord(knowledge, material, schema, token, actor);
+            if (remoteId == null) remoteId = saveRecord(knowledge, material, schema, approval, token, actor);
             else if (!business.targetCategory(business.snapshot(remoteId,schema.category()), knowledge, schema.category())) categoryChanged(knowledge);
             if (material.pdf()) syncPdf(owned(id, token), material, remoteId, token, actor);
             ObjectNode actual = business.snapshot(remoteId, schema.category());
@@ -136,7 +137,7 @@ class SyncService {
     }
 
     private String saveRecord(Knowledge knowledge, Material material, KnowledgeTemplates.Schema schema,
-                              String token, String actor) {
+                              SyncReviews.Approved approval, String token, String actor) {
         var category = schema.category();
         String remoteId;
         if ("POSTING".equals(knowledge.syncPhase())) {
@@ -148,7 +149,7 @@ class SyncService {
         } else {
             templates.validateClass(category, knowledge.knowledgeClass(), true);
             workflow.validateBusinessValues(knowledge,true);
-            business.verifyNoMatch(knowledge, material);
+            business.verifyCreate(knowledge, material, approval.plan());
             var form = business.createForm(knowledge, material, schema);
             cdss.prepareWrite();
             checkpoint(knowledge.id(), token, actor, "POSTING", null, null);
@@ -240,7 +241,7 @@ class SyncService {
             throw new CdssClient.RemoteFailure("4.23 上传的 PDF 校验值与原件不符，未确认附件绑定");
         }
         if (!cdss.hasAttachment(remoteId, attachment)) {
-            cdss.bindAttachment(remoteId, attachment, material.fileName(), knowledge.id().replace("-", ""));
+            cdss.bindAttachment(remoteId, attachment, store.displayFileName(material), knowledge.id().replace("-", ""));
         }
         if (!cdss.hasAttachment(remoteId, attachment)) {
             throw new CdssClient.RemoteFailure("4.23 已响应附件绑定，复查时尚未找到附件");
@@ -269,6 +270,7 @@ class SyncService {
             throw conflict("已在业务系统找到对应记录，请直接重试同步以读取回执");
         }
         transactions.executeWithoutResult(tx -> {
+            store.lockActiveMaterial(knowledge.materialId());
             changed(store.db().sql("""
                     UPDATE mc_knowledge SET sync_phase = NULL, sync_error = NULL, revision = revision + 1, updated_at = :now
                     WHERE id = :id AND revision = :revision AND status = 'SYNC_FAILED' AND sync_phase = 'POSTING'

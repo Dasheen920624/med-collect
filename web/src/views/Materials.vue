@@ -11,22 +11,25 @@ import EmptyState from '../components/EmptyState.vue'
 import Events from '../components/Events.vue'
 import Pagination from '../components/Pagination.vue'
 import StateBadge from '../components/StateBadge.vue'
+import OriginalLink from '../components/OriginalLink.vue'
 
 const props = defineProps({ session: Object, detail: String, parseOnly: Boolean, directory: Array, subjectId: String })
 const emit = defineEmits(['navigate', 'notice', 'scope', 'directory-changed'])
 const removalReason = ref('')
 const confirmingRemoval = ref(false)
+const archive = computed(() => !item.value?.removal.purge)
 async function removeMaterial() {
   const material = item.value.material
   if (!removalReason.value.trim() || busy.value) return
   busy.value = true
   panelError.value = ''
   try {
-    await send('/materials/' + material.id, { revision: material.revision, reason: removalReason.value.trim() }, 'DELETE')
+    await send('/materials/' + material.id + (archive.value ? '/archive' : ''),
+      { revision: material.revision, reason: removalReason.value.trim() }, archive.value ? 'POST' : 'DELETE')
     item.value = null
     await load()
     emit('directory-changed')
-    emit('notice', '原件及其未审批知识稿已移除')
+    emit('notice', '资料及关联稿件已移出工作台')
   } catch (e) { panelError.value = e.message }
   finally { busy.value = false }
 }
@@ -159,7 +162,8 @@ async function openMaterial(id, purpose = '') {
     confirmingRemoval.value = false
     removalReason.value = ''
     const action = parseAction(detail.parseState, detail.knowledge.total, detail.material.status)
-    if (purpose === 'append' && detail.material.status === 'APPROVED' && action !== 'progress') detailMode.value = 'parse'
+    if (detail.material.archivedAt) detailMode.value = 'original'
+    else if (purpose === 'append' && detail.material.status === 'APPROVED' && action !== 'progress') detailMode.value = 'parse'
     else if (purpose === 'preview') detailMode.value = 'original'
     else if (purpose || props.parseOnly) detailMode.value = action === 'retry' ? 'parse' : action
     else detailMode.value = 'original'
@@ -312,7 +316,7 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
   <div :class="{ 'directory-layout': !parseOnly }">
     <DirectoryTree v-if="!parseOnly" title="学科与疾病" all-label="全部原文" :nodes="groupNodes('SUBJECT')" :selected="filters.classId==='unlinked' ? 'unlinked' : subjectId" unassigned @select="filters.classId=''; emit('scope',$event); load()">
-      <button class="link" @click="emit('navigate','classifications')">目录维护</button>
+      <button class="link" @click="emit('navigate','classifications','from-originals')">目录维护</button>
       <template #footer><button class="tree-entry" :class="{chosen:filters.classId==='unlinked'}" @click="showUnlinked">未关联病种</button></template>
     </DirectoryTree>
     <section class="panel">
@@ -363,7 +367,7 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
 
   <Drawer v-if="item" :title="item.material.title" :subtitle="({parse:'AI解析 · 选择知识模板',results:'解析结果',progress:'解析进度'})[detailMode] || '原文详情'" wide :busy="busy" @close="closeMaterial">
     <div class="toolbar">
-      <StateBadge :state="item.material.status" :labels="materialStates" />
+      <StateBadge :state="item.material.archivedAt ? 'ARCHIVED' : item.material.status" :labels="{...materialStates,ARCHIVED:'已移除'}" />
       <div class="actions">
         <a v-if="item.material.sourceUrl" class="button secondary" :href="item.material.sourceUrl" target="_blank" rel="noopener noreferrer"><ExternalLink :size="16" /> 原始来源</a>
         <button v-if="item.material.formatCode === 'PDF'" class="button secondary" @click="preview = !preview"><FileText :size="16" /> {{ preview ? '收起 PDF' : '预览 PDF' }}</button>
@@ -371,23 +375,27 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
           {{ item.material.formatCode === 'METADATA' ? '下载来源记录' : '下载原件' }}</a>
       </div>
     </div>
+    <p v-if="item.material.archivedAt" class="message">移除时间 {{ date(item.material.archivedAt,true) }} · {{ item.material.archivedBy }}<br>{{ item.material.archiveReason }}</p>
+    <div class="original-file-line">
+      <OriginalLink :material="item.material" />
+      <small class="muted">{{ item.material.formatCode }} · {{ size(item.material.sizeBytes) }}</small>
+    </div>
     <PdfReader v-if="preview" :material-id="item.material.id" :title="item.material.title" />
     <dl v-if="!parseFocus" class="metadata">
-      <div><dt>原件</dt><dd>{{ item.material.fileName }} · {{ size(item.material.sizeBytes) }}</dd></div>
       <div><dt>来源</dt><dd>{{ item.material.sourceName || '—' }}</dd></div>
       <div><dt>作者 / 机构</dt><dd>{{ [item.material.authors, item.material.publisher].filter(Boolean).join(' · ') || '—' }}</dd></div>
       <div><dt>发表日期</dt><dd>{{ item.material.published || '—' }}</dd></div>
       <div v-if="item.material.externalRef"><dt>DOI / 索引号</dt><dd>{{ item.material.externalRef }}</dd></div>
       <div><dt>采集时间</dt><dd>{{ date(item.material.capturedAt, true) }}</dd></div>
       <div v-if="item.material.fetchedUrl && item.material.fetchedUrl !== item.material.sourceUrl">
-        <dt>实际获取地址</dt><dd><a :href="item.material.fetchedUrl" target="_blank" rel="noopener noreferrer">{{ item.material.fetchedUrl }}</a></dd></div>
+        <dt>获取来源</dt><dd><a :href="item.material.fetchedUrl" :title="item.material.fetchedUrl" target="_blank" rel="noopener noreferrer">查看实际获取页面</a></dd></div>
       <div><dt>SHA-256</dt><dd class="hash">{{ item.material.sha256 }}</dd></div>
       <div><dt>资料分类</dt><dd>{{ classifications.filter(node => item.classificationIds.includes(node.id)).map(classPath).join('、') || '未分类' }}
-        <button class="link" @click="editClassifications([item.material.id], item.classificationIds)">修改分类</button></dd></div>
+        <button v-if="!item.material.archivedAt" class="link" @click="editClassifications([item.material.id], item.classificationIds)">修改分类</button></dd></div>
     </dl>
     <section v-if="!parseFocus" class="form-section">
       <h3>原文摘要</h3>
-      <p v-if="item.material.status === 'APPROVED'" class="reading-text">{{ item.material.sourceAbstract || '暂无原文摘要' }}</p>
+      <p v-if="item.material.status === 'APPROVED' || item.material.archivedAt" class="reading-text">{{ item.material.sourceAbstract || '暂无原文摘要' }}</p>
       <textarea v-else v-model="summary" aria-label="原文摘要" rows="5" maxlength="12000" placeholder="可根据已核验的原件补充摘要"></textarea>
       <details v-if="item.material.rawText" class="raw-text" :open="showExtract"><summary>查看提取文本</summary><pre>{{ item.material.rawText }}</pre></details>
     </section>
@@ -396,19 +404,20 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
     </section>
     <section v-if="item.knowledge.total && detailMode !== 'parse'" class="form-section" aria-label="已生成的知识">
       <div class="toolbar"><h3>已生成的知识 · {{ item.knowledge.total }} 条</h3>
-        <button v-if="item.material.status === 'APPROVED' && item.parseState !== 'RUNNING'" class="link" @click="openMaterial(item.material.id,'append')">{{ item.parseState === 'FAILED' ? '重试其他模板' : '追加解析模板' }}</button></div>
+        <button v-if="!item.material.archivedAt && item.material.status === 'APPROVED' && item.parseState !== 'RUNNING'" class="link" @click="openMaterial(item.material.id,'append')">{{ item.parseState === 'FAILED' ? '重试其他模板' : '追加解析模板' }}</button></div>
       <ul class="simple-list"><li v-for="entry in item.knowledge.rows" :key="entry.id">
         <button class="link" @click="emit('navigate', 'knowledge', entry.id)">{{ entry.title }}</button>
         <span>{{ categories.find(c => c.code === entry.typeCode)?.name || entry.typeCode }} · {{ knowledgeStates[entry.status] }} · {{ date(entry.updatedAt) }}</span>
+        <button v-if="parseOnly" class="link" @click="emit('navigate','templates',entry.typeCode + ':' + (entry.knowledgeClass || ''))">查看模板</button>
       </li></ul>
       <button v-if="item.knowledge.total > item.knowledge.rows.length" class="link" @click="emit('navigate','knowledge','material:' + item.material.id)">查看全部 {{ item.knowledge.total }} 条</button>
     </section>
-    <section v-if="item.material.status !== 'APPROVED'" class="form-section form-grid">
+    <section v-if="!item.material.archivedAt && item.material.status !== 'APPROVED'" class="form-section form-grid">
       <h3>原文审核</h3>
       <label>审核意见<textarea v-model.trim="notes" rows="3" maxlength="1000" placeholder="退回时需填写原因"></textarea></label>
     </section>
     <section v-else-if="detailMode === 'parse'" class="form-section form-grid">
-      <h3><Sparkles :size="18" /> 解析模板</h3>
+      <h3><Sparkles :size="18" /> 生成设置</h3>
       <p v-if="item.knowledge.total" class="muted">选择其他知识类型或子类可追加解析。选择已有模板将直接打开保存的结果。</p>
       <div class="two-fields">
         <label>知识类型<select v-model="chosen.typeCode" :disabled="busy" @change="chooseType">
@@ -425,6 +434,7 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
       </li></ul>
       <div class="actions">
         <button class="button secondary" :disabled="busy || !canAdd" @click="addTemplate">加入解析列表</button>
+        <button v-if="canAdd" class="link" :disabled="busy" @click="emit('navigate','templates',chosen.typeCode + ':' + chosen.knowledgeClass)">查看模板</button>
         <button class="button secondary" :disabled="busy || (!canAdd && !queue.length) || queue.some(r => r.useAi === true)" @click="draft(false)">手工建稿</button>
         <button class="button primary" :disabled="busy || (!canAdd && !queue.length) || queue.some(r => r.useAi === false)" @click="draft(true)">
           <Sparkles :size="17" /> {{ parseMode === 'AI' ? '正在解析…' : '模型解析' }}
@@ -432,10 +442,10 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
         <button v-if="item.knowledge.total" class="link" :disabled="busy" @click="openMaterial(item.material.id,'results')">返回已有结果</button>
       </div>
     </section>
-    <section v-if="!parseFocus && item.parseState !== 'RUNNING' && session.admin && item.knowledge.total === item.knowledge.rows.length && item.knowledge.rows.every(k => !k.remoteId && !k.syncPhase && ['PENDING','DRAFT','RETURNED','REFERENCE_ONLY'].includes(k.status))" class="form-section">
+    <section v-if="!parseFocus && item.parseState !== 'RUNNING' && session.admin && (item.removal.purge || item.removal.archive)" class="form-section">
       <button v-if="!confirmingRemoval" class="link" @click="confirmingRemoval = true">移除这份资料</button>
       <template v-else>
-        <p>将永久移除本地原件和关联的未审批稿件。</p>
+        <p>{{ archive ? '原件和关联稿件将移出工作台，历史原件及 4.23 回执可继续查阅。' : '将永久移除本地原件和关联的未审批稿件。' }}</p>
         <label>移除原因<input v-model="removalReason" maxlength="400" /></label>
         <button class="button secondary" :disabled="busy" @click="confirmingRemoval = false">取消</button>
         <button class="button secondary" :disabled="busy || !removalReason.trim()" @click="removeMaterial">确认移除</button>
@@ -449,11 +459,11 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
       </li></ul>
     </section>
     <Events v-if="!parseFocus" :events="item.events" />
-    <template v-if="item.material.status !== 'APPROVED'" #footer>
+    <template v-if="!item.material.archivedAt && item.material.status !== 'APPROVED'" #footer>
       <button v-if="item.material.status === 'PENDING'" class="button secondary" :disabled="busy" @click="review(false)">退回原文</button>
       <button class="button primary" :disabled="busy" @click="review(true)">原文审核通过</button>
     </template>
-    <template v-else-if="!parseFocus && !item.knowledge.total" #footer>
+    <template v-else-if="!item.material.archivedAt && !parseFocus && !item.knowledge.total" #footer>
       <button class="button primary" @click="openMaterial(item.material.id,'parse')">{{ item.parseState === 'RUNNING' ? '查看进度' : item.parseState === 'FAILED' ? '重试解析' : 'AI解析' }}</button>
     </template>
   </Drawer>

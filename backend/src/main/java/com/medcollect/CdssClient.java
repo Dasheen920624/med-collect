@@ -255,6 +255,10 @@ class CdssClient {
         return baseUrl(settings.cdssUrl()) + "/knowledgePreview?id=" + encode(id);
     }
 
+    String managementUrl() {
+        return baseUrl(settings.cdssUrl()) + "/";
+    }
+
     JsonNode verifyConnection() { return data(form("/knowledge/get-statistics-by-status", Map.of())); }
 
     private JsonNode form(String path, Map<String, String> form) {

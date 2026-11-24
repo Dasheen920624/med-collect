@@ -160,7 +160,7 @@ class MaterialService {
                       WHEN status='RETURNED' THEN 'CHECK' WHEN knowledge_count>0 THEN 'COMPLETED' ELSE 'UNPARSED' END parse_state,
                     CASE WHEN last_attempt_at IS NULL OR last_attempt_at < generated_at THEN generated_at ELSE last_attempt_at END last_parsed_at
                   FROM (SELECT m.id, m.title, m.format_code, m.file_name, m.source_url, m.source_name, m.captured_at,
-                    m.status, m.authors, m.publisher, m.external_ref,
+                    m.status, m.authors, m.publisher, m.external_ref, m.archived_at,
                     COALESCE((SELECT t.collection_mode FROM mc_run_result p JOIN mc_run r ON r.id = p.run_id
                       JOIN mc_task t ON t.id = r.task_id WHERE p.material_id = m.id AND p.status IN ('CAPTURED','METADATA')
                       ORDER BY r.started_at, r.id FETCH FIRST 1 ROW ONLY),
@@ -182,7 +182,7 @@ class MaterialService {
                           Long fromTime, Long untilTime, int page, int size) {
         var filters = new HashMap<String, Object>();
         filters.put("activeSince", store.now() - PARSE_TIMEOUT);
-        String from = LIBRARY_FROM;
+        String from = LIBRARY_FROM + " AND m.archived_at IS NULL";
         if (!trim(query).isBlank()) {
             from += " AND (INSTR(LOWER(title), :query) > 0 OR INSTR(LOWER(source_name), :query) > 0"
                     + " OR INSTR(LOWER(authors), :query) > 0 OR INSTR(LOWER(publisher), :query) > 0"
@@ -234,7 +234,7 @@ class MaterialService {
 
     @Transactional
     MaterialDetail decide(String id, MaterialDecision decision, String actor) {
-        Material material = store.material(id);
+        Material material = store.lockActiveMaterial(id);
         if (material.status() == MaterialStatus.APPROVED) throw conflict("这份原文已审核通过");
         String note = decision.approved() ? trim(decision.note()) : requireText(decision.note(), "退回时请填写原因");
         MaterialStatus status = decision.approved() ? MaterialStatus.APPROVED : MaterialStatus.RETURNED;
@@ -246,7 +246,7 @@ class MaterialService {
                 .param("id", id).param("revision", decision.revision()).update());
         store.event("MATERIAL", id, status.name(), actor, note);
         Material updated = store.material(id);
-        return new MaterialDetail(updated, store.extractedText(updated));
+        return new MaterialDetail(updated, store.extractedText(updated), store.displayFileName(updated));
     }
 
     List<Run> runs(String materialId) {

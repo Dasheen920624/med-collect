@@ -1,13 +1,13 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Download } from '@lucide/vue'
-import { api, send } from '../api'
+import { api, list, send } from '../api'
 import Drawer from '../components/Drawer.vue'
 import Events from '../components/Events.vue'
 import EmptyState from '../components/EmptyState.vue'
 
-const props = defineProps({ session: Object })
-const emit = defineEmits(['notice'])
+const props = defineProps({ session: Object, detail: String })
+const emit = defineEmits(['notice','navigate','scope'])
 const categories = ref([])
 const classes = ref([])
 const code = ref('')
@@ -20,12 +20,15 @@ const reading = ref(false)
 const preview = ref(false)
 const history = ref(null)
 const expanded = ref(['properties','content'])
+const usage = ref(null)
 const sections = computed(() => schema.value ? [
   { key:'properties', name:'属性配置', items:schema.value.fields.filter(f => f.property) },
   { key:'content', name:'目录配置', items:schema.value.fields.filter(f => !f.property) },
 ].filter(g => g.items.length) : [])
 const parameters = computed(() => schema.value && { ...schema.value, rules: Object.fromEntries(
   Object.entries(rules.value).filter(([,r]) => r.required || r.instruction.trim())) })
+const ruleSignature = (value = {}) => JSON.stringify(Object.entries(value).sort(([a],[b]) => a.localeCompare(b)))
+const dirty = computed(() => schema.value && ruleSignature(parameters.value.rules) !== ruleSignature(schema.value.rules))
 function toggle(key) { expanded.value = expanded.value.includes(key) ? expanded.value.filter(k => k !== key) : [...expanded.value,key] }
 async function showHistory() {
   try { history.value = await api('/template-profiles/'+code.value+'/events?knowledgeClass='+encodeURIComponent(classCode.value)) }
@@ -35,7 +38,7 @@ const category = computed(() => categories.value.find(entry => entry.code === co
 const editable = field => !field.dictionary && !['references', 'laiyuan', 'guideType'].includes(field.id)
 const selectedPath = () => '/template-profiles/' + code.value + '?knowledgeClass=' + encodeURIComponent(classCode.value)
 
-async function chooseCategory() {
+async function chooseCategory(selectedClass = '') {
   schema.value = null
   classCode.value = ''
   classes.value = []
@@ -47,7 +50,8 @@ async function chooseCategory() {
     const result = await api('/categories/' + selected + '/classes')
     if (selected !== code.value) return
     classes.value = result
-    if (!category.value.classRequired) await loadTemplate()
+    if (result.some(c => c.code === selectedClass)) classCode.value = selectedClass
+    if (classCode.value || !category.value.classRequired) await loadTemplate()
   } catch (e) { if (selected === code.value) error.value = e.message }
   finally { if (selected === code.value) reading.value = false }
 }
@@ -70,12 +74,28 @@ function apply(value) {
     [field.id, { instruction: '', required: false, ...value.rules?.[field.id] }]))
   error.value = ''
 }
+watch(() => schema.value, async (value, _, cleanup) => {
+  let active = true
+  cleanup(() => { active = false })
+  usage.value = null
+  if (!value) return
+  try {
+    const data = await list('/knowledge',{typeCode:value.category.code,knowledgeClass:value.knowledgeClass,size:1})
+    if (active) usage.value = data.total
+  } catch (e) { if (active) error.value = e.message }
+})
+
+function openUsage() {
+  emit('scope','')
+  emit('navigate','knowledge','type:' + schema.value.category.code + ':' + (schema.value.knowledgeClass || ''))
+}
 
 async function save() {
   busy.value = true
   error.value = ''
   try {
     apply(await send(selectedPath(), { revision: schema.value.profileRevision, rules: rules.value }, 'PUT'))
+    preview.value = false
     emit('notice', '生成规则已保存')
   } catch (e) { error.value = e.message }
   finally { busy.value = false }
@@ -90,14 +110,19 @@ function exportTemplate() {
   setTimeout(() => URL.revokeObjectURL(uri), 500)
 }
 
+async function applyRoute(detail) {
+  const [requested, selectedClass] = (detail || '').split(':')
+  code.value = categories.value.find(c => c.code === requested)?.code
+    || categories.value.find(c => c.code === '1')?.code || categories.value[0]?.code || ''
+  await chooseCategory(selectedClass)
+}
 onMounted(async () => {
   try {
     categories.value = await api('/categories')
-    code.value = categories.value.find(c => c.code === '1')?.code || categories.value[0]?.code || ''
-    await chooseCategory()
-  }
-  catch (e) { error.value = e.message }
+    await applyRoute(props.detail)
+  } catch (e) { error.value = e.message }
 })
+watch(() => props.detail, detail => { if (categories.value.length) applyRoute(detail) })
 </script>
 
 <template>
@@ -106,7 +131,7 @@ onMounted(async () => {
   </section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
   <section class="panel">
-    <div class="filters"><label class="filter-field">知识模板<select v-model="code" :disabled="busy" @change="chooseCategory">
+    <div class="filters"><label class="filter-field">知识模板<select v-model="code" :disabled="busy" @change="chooseCategory()">
       <option v-for="entry in categories" :key="entry.code" :value="entry.code">{{ entry.name }}</option></select></label>
       <label v-if="classes.length" class="filter-field">知识子类<select v-model="classCode" :disabled="busy" @change="loadTemplate">
         <option value="">{{ category?.classRequired ? '请选择知识子类' : '通用模板' }}</option>
@@ -117,9 +142,10 @@ onMounted(async () => {
       <div class="toolbar"><h2>内容结构</h2><div class="actions">
         <button v-if="sections.some(s=>!expanded.includes(s.key))" class="link" @click="expanded=sections.map(s=>s.key)">全部展开</button><button v-if="expanded.length" class="link" @click="expanded=[]">全部收起</button>
         <button class="button secondary" @click="preview=true">参数预览</button>
-        <button v-if="props.session.admin" class="button primary" :disabled="busy" @click="save">保存全部</button>
+        <button v-if="props.session.admin" class="button primary" :disabled="busy || !dirty" @click="save">保存全部</button>
         <button class="button secondary" @click="showHistory">操作日志</button></div></div>
-      <p class="template-origin">{{ schema.category.name }} · {{ schema.origin }} · 生成规则版本 {{ schema.profileRevision }}</p>
+      <div class="toolbar template-origin"><span>{{ schema.category.name }} · {{ schema.origin }} · 生成规则版本 {{ schema.profileRevision }}</span>
+        <span v-if="usage !== null">使用情况 · <button v-if="usage" class="link" @click="openUsage">{{ usage }} 条知识</button><template v-else>0 条知识</template></span></div>
       <section v-for="section in sections" :key="section.key" class="template-section">
         <button class="section-toggle" :aria-expanded="expanded.includes(section.key)" @click="toggle(section.key)">{{ expanded.includes(section.key) ? '▾' : '▸' }} {{ section.name }} <span>{{ section.items.length }}</span></button>
         <div v-if="expanded.includes(section.key)" class="table-wrap"><table><thead><tr><th>字段 ID</th><th>字段名称</th><th>字段用途</th><th>提取说明</th><th>必填</th></tr></thead>
@@ -131,8 +157,10 @@ onMounted(async () => {
     </div>
     <EmptyState v-else :title="reading ? '正在加载业务模板' : '请选择知识模板及适用子类'" />
   </section>
-  <Drawer v-if="preview" title="模板参数预览" wide @close="preview=false"><pre class="parameter-preview">{{ JSON.stringify(parameters,null,2) }}</pre>
-    <template #footer><button class="button secondary" @click="exportTemplate"><Download :size="16" /> 导出 JSON</button></template>
+  <Drawer v-if="preview" title="参数预览" wide :busy="busy" @close="preview=false">
+    <p v-if="error" class="message error" role="alert">{{ error }}</p><pre class="parameter-preview">{{ JSON.stringify(parameters,null,2) }}</pre>
+    <template #footer><button class="button secondary" :disabled="busy" @click="exportTemplate"><Download :size="16" /> 导出 JSON</button>
+      <button v-if="props.session.admin && dirty" class="button primary" :disabled="busy" @click="save">保存</button></template>
   </Drawer>
-  <Drawer v-if="history" title="模板操作日志" @close="history=null"><Events :events="history" /></Drawer>
+  <Drawer v-if="history" title="模板配置操作日志" @close="history=null"><Events :events="history" /></Drawer>
 </template>

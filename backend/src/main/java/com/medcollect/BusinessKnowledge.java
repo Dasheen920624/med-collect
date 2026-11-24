@@ -27,13 +27,26 @@ class BusinessKnowledge {
     enum Operation { CREATE, UPDATE, SKIP, CHOOSE, REFERENCE_ONLY }
     record Difference(String field, String before, String after) {}
     record Candidate(String id, String title, String knowledgeClass, String doi, String basis, String url, boolean collectorCreated) {}
+    record ReferenceFile(String name, String url) {}
+    record Reference(Candidate record, String category, String categoryName, String source, String summary,
+                     String enabled, String publication, String version, String updatedAt, String managementUrl,
+                     List<ReferenceFile> attachments) {}
     record Receipt(String remoteId, String url, String type, String childType, String knowledgeClass,
                    boolean categoryMatches, boolean titleMatches, boolean summaryMatches, Boolean pdfMatches) {
         boolean verified() { return categoryMatches && titleMatches && summaryMatches && !Boolean.FALSE.equals(pdfMatches); }
     }
     record Plan(Operation operation, String doi, Candidate target, List<Candidate> candidates,
                 List<Difference> differences, ObjectNode before, String baseline,
-                Map<String, String> form, boolean uploadPdf) {}
+                Map<String, String> form, boolean uploadPdf, List<Candidate> related, boolean similarityChecked) {
+        Plan {
+            related = related == null ? List.of() : List.copyOf(related);
+        }
+
+        Plan(Operation operation, String doi, Candidate target, List<Candidate> candidates,
+             List<Difference> differences, ObjectNode before, String baseline, Map<String,String> form, boolean uploadPdf) {
+            this(operation, doi, target, candidates, differences, before, baseline, form, uploadPdf, List.of(), false);
+        }
+    }
 
     static final class ReviewChanged extends RuntimeException {
         ReviewChanged(String message) { super(message); }
@@ -76,7 +89,8 @@ class BusinessKnowledge {
         var selected = candidates.stream().filter(item -> item.id().equals(selectedId)).findFirst().orElse(null);
         if (!trim(selectedId).isBlank() && selected == null) throw conflict("该业务记录已移出匹配范围，请重新查重");
         if (candidates.isEmpty()) {
-            return new Plan(Operation.CREATE, doi, null, List.of(), List.of(), null, null, Map.of(), material.pdf());
+            return new Plan(Operation.CREATE, doi, null, List.of(), List.of(), null, null, Map.of(), material.pdf(),
+                    related(draft, material, schema.category(), doi), true);
         }
         if (selected == null && candidates.size() > 1) {
             return new Plan(Operation.CHOOSE, doi, null, candidates, List.of(), null, null, Map.of(), false);
@@ -101,11 +115,97 @@ class BusinessKnowledge {
                 before, comparison.baseline(), Map.of(), false);
     }
 
-    void verifyNoMatch(Knowledge draft, Material material) {
+    void verifyCreate(Knowledge draft, Material material, Plan approved) {
         var category = workflow.schema(draft).category();
-        if (!candidates(draft, material, category, firstDoi(material.externalRef(), material.sourceUrl(), material.fetchedUrl())).isEmpty()) {
+        String doi = firstDoi(material.externalRef(), material.sourceUrl(), material.fetchedUrl());
+        if (!candidates(draft, material, category, doi).isEmpty()) {
             throw new ReviewChanged("4.23 出现了匹配知识，请重新查重并审核处理方式");
         }
+        var current = related(draft, material, category, doi).stream().collect(java.util.stream.Collectors.toSet());
+        if (!current.equals(new java.util.HashSet<>(approved.related()))) {
+            throw new ReviewChanged("4.23 的相似资料发生变化，请重新核对并选择是否同步");
+        }
+    }
+
+    private List<Candidate> related(Knowledge draft, Material material, KnowledgeTemplates.Category category, String doi) {
+        var terms = new LinkedHashSet<String>();
+        addRelatedTerms(terms, draft.title());
+        if (isLiterature(category.type())) addRelatedTerms(terms, material.title());
+        var related = new LinkedHashMap<String, Candidate>();
+        var filters = scope(category, draft);
+        for (String term : terms) {
+            filters.put("name", term);
+            for (var row : cdss.search(filters, 1, 50).rows()) {
+                String id = row.path("id").asText();
+                String title = row.path("name").asText();
+                if (id.isBlank() || !inScope(row, draft, category) || match(row, draft, material, doi) != null) continue;
+                if (!similarTitle(draft.title(), title) && !(isLiterature(category.type()) && similarTitle(material.title(), title))) continue;
+                related.putIfAbsent(id, candidate(row, "同类标题相近"));
+            }
+        }
+        return related.values().stream().sorted(Comparator.comparing(Candidate::title).thenComparing(Candidate::id)).limit(12).toList();
+    }
+
+    private void addRelatedTerms(LinkedHashSet<String> terms, String title) {
+        String segment = titleQuery(title);
+        boolean han = segment.codePoints().anyMatch(c -> Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN);
+        int width = han ? 4 : 7;
+        if (segment.length() < width) return;
+        terms.add(segment.substring(0, width));
+        if (segment.length() >= 2 * width) {
+            int center = (segment.length() - width) / 2;
+            terms.add(segment.substring(center, center + width));
+        }
+    }
+
+    private boolean similarTitle(String left, String right) {
+        String a = titleKey(left), b = titleKey(right);
+        int shortest = Math.min(a.length(), b.length()), longest = Math.max(a.length(), b.length());
+        if (shortest < 6 || shortest * 10 < longest * 6) return false;
+        if (a.contains(b) || b.contains(a)) return true;
+        var pairs = new java.util.HashSet<String>();
+        for (int i = 1; i < a.length(); i++) pairs.add(a.substring(i - 1, i + 1));
+        var other = new java.util.HashSet<String>();
+        for (int i = 1; i < b.length(); i++) other.add(b.substring(i - 1, i + 1));
+        int total = pairs.size() + other.size();
+        pairs.retainAll(other);
+        return pairs.size() >= 4 && pairs.size() * 3 >= total;
+    }
+
+    Reference reference(Knowledge draft, String remoteId) {
+        var schema = workflow.schema(draft);
+        var category = schema.category();
+        var item = cdss.knowledge(BusinessLiterature.key(remoteId));
+        var attachments = new ArrayList<ReferenceFile>();
+        for (JsonNode file : cdss.attachments(remoteId)) {
+            if (file.path("validFlag").asInt(1) != 1) continue;
+            String path = DocumentReader.withDefault(file.path("knowledgeAffix").asText(""), file.path("url").asText(""));
+            if (path.isBlank()) continue;
+            String name = DocumentReader.withDefault(file.path("affixName").asText(""), file.path("name").asText(""));
+            try { attachments.add(new ReferenceFile(DocumentReader.withDefault(name, "业务原件"), cdss.attachmentUrl(path))); }
+            catch (org.springframework.web.server.ResponseStatusException unusablePath) {
+                attachments.add(new ReferenceFile(DocumentReader.withDefault(name, "业务原件"), null));
+            }
+        }
+        String summary = "";
+        var layout = layout(item);
+        if (layout != null) {
+            var fields = layout.path("content");
+            summary = valueText(fields.path(schema.summaryKey()));
+            if (summary.isBlank()) summary = valueText(fields.path("abstract"));
+        }
+        if (summary.isBlank() && item.path("content").isTextual() && layout == null) summary = item.path("content").asText();
+        String name = DocumentReader.withDefault(item.path("knowledgeClassName").asText(""), item.path("knowledgeClass").asText(""));
+        String entry = switch (category.type()) {
+            case "17" -> "临床指南知识 · 类型选「指南」";
+            case "30" -> "临床指南知识 · 类型选「书籍」";
+            case "31" -> "临床指南知识 · 类型选「期刊」";
+            case "8" -> "检验检查说明书 · " + category.name();
+            default -> category.name();
+        };
+        return new Reference(candidate(item, ""), entry, name, item.path("source").asText(""),
+                limit(Jsoup.parse(summary).text(), 700), item.path("isStart").asText(null), item.path("releaseStatus").asText(null),
+                item.path("version").asText(""), item.path("modifyTime").asText(""), cdss.managementUrl(), List.copyOf(attachments));
     }
 
     Page<Candidate> targets(Knowledge draft, String query, int page) {
