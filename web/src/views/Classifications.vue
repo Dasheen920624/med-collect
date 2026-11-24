@@ -114,15 +114,15 @@ onMounted(load)
     <section class="panel"><div class="panel-head"><h2>{{ current?.name || groups[group] }}</h2>
       <button v-if="props.session.admin" class="button primary" @click="edit()"><Plus :size="16" />{{ group==='SUBJECT' ? (selected ? '新增病种' : '新增学科') : '新增分类' }}</button></div>
       <div class="filters"><label class="search"><Search :size="15" /><input v-model.trim="query" placeholder="搜索分类名称或编码" aria-label="搜索分类" /></label></div>
-      <div v-if="rows.length" class="table-wrap"><table><thead><tr><th>序号</th><th>名称</th><th>{{ group==='SUBJECT' && !selected ? '病种数量' : '子项数量' }}</th><th>对应编码</th><th>状态</th><th>使用情况</th><th>操作</th></tr></thead>
+      <div v-if="rows.length" class="table-wrap"><table class="classification-list"><thead><tr><th>序号</th><th>名称</th><th>{{ group==='SUBJECT' && !selected ? '病种数量' : '子项数量' }}</th><th>对应编码</th><th>状态</th><th class="usage-cell">使用情况</th><th class="actions-cell">操作</th></tr></thead>
         <tbody><tr v-for="(node,i) in visible" :key="node.id"><td>{{ (page-1)*size+i+1 }}</td>
           <td><button class="link" @click="selected=node.id;query=''">{{ node.name }}</button></td>
           <td>{{ groupNodes.filter(n => n.parentId === node.id).length }}</td><td>{{ node.businessCode || '—' }}<small class="subline">{{ node.remoteKey ? '4.23 业务目录' : '采集端维护' }}</small></td>
           <td><StateBadge :state="active(node) ? 'ACTIVE' : 'OFF'" :labels="{ACTIVE:'启用',OFF:node.enabled ? '上级停用' : '停用'}" /></td>
-          <td><button class="link" @click="showMaterials(node)">{{ node.materialCount }} 份原文</button> / {{ node.knowledgeCount }} 条知识</td>
-          <td><span v-if="node.remoteKey" class="muted">随业务同步</span><div v-else-if="props.session.admin" class="table-actions"><button class="link" @click="edit(node)">编辑</button>
+          <td class="usage-cell"><button v-if="node.materialCount" class="link" @click="showMaterials(node)">{{ node.materialCount }} 份原文</button><span v-else>0 份原文</span><span class="usage-separator" aria-hidden="true"> / </span>{{ node.knowledgeCount }} 条知识</td>
+          <td class="actions-cell"><span v-if="node.remoteKey" class="muted">随业务同步</span><div v-else-if="props.session.admin" class="table-actions"><button class="link" @click="edit(node)">编辑</button>
             <button class="link" :disabled="busy" @click="toggle(node)">{{ node.enabled ? '停用' : '启用' }}</button>
-            <button class="link" :disabled="busy || !adjacent(node,-1)" @click="move(node,-1)">上移</button><button class="link" :disabled="busy || !adjacent(node,1)" @click="move(node,1)">下移</button></div></td>
+            <button v-if="adjacent(node,-1)" class="link" :disabled="busy" @click="move(node,-1)">上移</button><button v-if="adjacent(node,1)" class="link" :disabled="busy" @click="move(node,1)">下移</button></div><span v-else>—</span></td>
         </tr></tbody></table></div>
       <EmptyState v-else title="暂无匹配分类" />
       <Pagination :page="page" :size="size" :total="rows.length" resizable @change="page=$event" @resize="size=$event;page=1" />

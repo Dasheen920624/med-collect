@@ -80,7 +80,7 @@ final class Records {
         }
     }
     record DraftInput(@NotBlank @Size(max = 20) String typeCode, @Size(max = 60) String knowledgeClass,
-                      boolean useAi, java.util.UUID requestId) {}
+                      boolean useAi, java.util.UUID requestId, boolean reuseExisting) {}
     record DraftEdit(@Positive int revision, @NotBlank @Size(max = 100) String title,
                      @Size(max = 12000) String summary, Map<String, String> fields,
                      Map<String, List<String>> relations, @Size(max=60) String knowledgeClass) {}

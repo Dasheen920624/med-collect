@@ -351,7 +351,7 @@ watch(() => props.detail, applyDetail)
       </div></details>
     </form>
     <div v-if="table.rows.length" class="table-wrap">
-      <table><thead><tr><th>序号</th><th>知识名称 / 类别</th><th>来源原文</th><th>AI预审核</th><th>提交状态</th><th>审核状态</th><th>发布状态</th><th>同步状态</th><th>操作</th></tr></thead>
+      <table class="knowledge-list"><thead><tr><th>序号</th><th>知识名称 / 类别</th><th>来源原文</th><th>AI预审核</th><th>提交状态</th><th>审核状态</th><th>发布状态</th><th>同步状态</th><th class="actions-cell">操作</th></tr></thead>
         <tbody><tr v-for="(row,i) in table.rows" :key="row.id">
           <td>{{ (table.page-1)*table.size+i+1 }}</td><td><button class="link record-title" @click="openDraft(row.id)">{{ row.title }}</button><small class="subline">{{ categories[row.typeCode] || row.typeCode }}</small></td>
           <td><button class="link record-title" @click="emit('navigate','materials',row.materialId)">{{ row.materialTitle }}</button></td>
@@ -360,7 +360,7 @@ watch(() => props.detail, applyDetail)
           <td><StateBadge :state="humanState(row)" :labels="humanLabels" /><small v-if="row.reviewer" class="subline">{{ row.reviewer }} · {{ date(row.reviewedAt) }}</small></td>
           <td :title="row.remoteId ? '4.23 最近回读的发布状态' : ''">{{ !row.remoteId ? '未发布' : row.businessRelease==='1' ? '已发布' : row.businessRelease==='2' ? '已撤回' : row.businessRelease==='0' ? '未发布' : '待核验' }}</td>
           <td><StateBadge :state="syncState(row)" :labels="outcomeLabels" /></td>
-          <td><button class="link" @click="openDraft(row.id)">查看知识</button></td>
+          <td class="actions-cell"><button class="link" @click="openDraft(row.id)">查看知识</button></td>
         </tr></tbody></table></div>
     <EmptyState v-else :title="loading ? '正在查询知识' : '暂无匹配知识'" />
     <Pagination v-bind="table" resizable @change="load" @resize="pageSize = $event; load()" />
@@ -453,7 +453,7 @@ watch(() => props.detail, applyDetail)
         </button>
       </div>
       <p v-if="canCompare && !review" class="muted">审核前核对 4.23 现有知识。</p>
-      <BusinessTargetPicker v-if="canCompare && !draft.updateTargetId" :key="draft.id" :draft-id="draft.id" :busy="busy" @select="id => compare(id,true)" />
+      <BusinessTargetPicker v-if="canCompare && !draft.updateTargetId && !(draft.status==='REFERENCE_ONLY' && !draft.knowledgeClass)" :key="draft.id" :draft-id="draft.id" :busy="busy" @select="id => compare(id,true)" />
       <template v-if="review">
         <p v-if="draft.syncPhase !== 'SKIPPED' && draft.status !== 'SYNCED'">{{ review.operation==='REFERENCE_ONLY' && !review.target?.knowledgeClass ? '4.23 目标缺少有效类别，已归入只读对照。' : reviewMessages[review.operation] }}</p>
         <p v-if="review.mayResetBusinessReview && draft.status !== 'SYNCED'" class="message">
@@ -526,13 +526,13 @@ watch(() => props.detail, applyDetail)
       </template>
       <template v-else-if="draft.status === 'PENDING'">
         <button class="button secondary" :disabled="busy" @click="act('decision', false)">退回修改</button>
-        <button class="button primary" :disabled="busy || !approveReady" @click="act('decision', true)">人工审核通过</button>
+        <button v-if="approveReady" class="button primary" :disabled="busy" @click="act('decision', true)">人工审核通过</button>
       </template>
       <template v-else>
         <button v-if="canReopen" class="button secondary" :disabled="busy" @click="act('reopen')">退回修改</button>
         <button v-if="draft.status === 'SYNC_FAILED' && draft.syncPhase === 'POSTING'" class="button secondary" :disabled="busy" @click="act('sync-reset')">登记复核结果</button>
-        <button class="button primary" :disabled="busy || !session.cdssSync || needsReview" @click="act('sync')">
-          {{ draft.status !== 'APPROVED' ? '重试同步' : review?.operation === 'SKIP' ? '登记跳过' : '同步至 4.23' }}
+        <button v-if="session.cdssSync && !needsReview" class="button primary" :disabled="busy" @click="act('sync')">
+          {{ draft.syncPhase === 'POSTING' ? '核实新增回执' : draft.status !== 'APPROVED' ? '重试同步' : review?.operation === 'SKIP' ? '登记跳过' : '同步至 4.23' }}
         </button>
       </template>
     </template>

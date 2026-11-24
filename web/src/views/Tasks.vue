@@ -137,7 +137,23 @@ async function showHistory(page = 1) {
   } catch (e) { error.value = e.message }
 }
 
-function working(task) { return task.leaseUntil && task.leaseUntil > Date.now() }
+function working(task) { return task.latestRun?.status === 'RUNNING' || task.leaseUntil > Date.now() }
+function taskActions(task, latest = task.latestRun) {
+  if (working(task) || latest?.status === 'RUNNING') return {}
+  const completed = latest?.status === 'SUCCEEDED'
+  const retry = latest?.status === 'FAILED' || latest?.status === 'PARTIAL'
+  const upload = task.mode === 'UPLOAD'
+  const imported = task.mode === 'BUSINESS'
+  const edit = !imported && !(upload && completed)
+  let label = '执行'
+  if (upload) label = completed ? '追加文件' : '上传文件'
+  else if (retry) label = '重试采集'
+  else if (task.selectResults) label = completed ? '重新搜索' : '搜索'
+  else if (imported) label = completed ? '重新导入' : '导入'
+  else if (completed) label = '再次执行'
+  return { edit, label, inList: task.enabled && !completed }
+}
+const detailActions = computed(() => selectedTask.value ? taskActions(selectedTask.value.task, selectedTask.value.runs[0]) : {})
 function taskName(id) { return table.value.rows.find(task => task.id === id)?.name || '查看执行详情' }
 
 async function run(task) {
@@ -266,16 +282,16 @@ function resultText(r) {
       </div></details>
     </form>
     <div v-if="table.rows.length" class="table-wrap">
-      <table><thead><tr><th>序号</th><th>任务标题</th><th>创建者</th><th>采集方式</th><th>创建时间</th><th>执行计划</th><th>采集结果</th><th>状态</th><th>操作</th></tr></thead>
+      <table class="task-list"><thead><tr><th>序号</th><th>任务标题</th><th>创建者</th><th>采集方式</th><th>创建时间</th><th>执行计划</th><th>采集结果</th><th>状态</th><th class="actions-cell">操作</th></tr></thead>
         <tbody><tr v-for="(task,i) in table.rows" :key="task.id">
           <td>{{ (table.page - 1) * table.size + i + 1 }}</td><td><button class="link" @click="openTask(task.id)">{{ task.name }}</button></td>
           <td>{{ task.createdBy || '未记录' }}</td><td>{{ modes[task.mode] }}</td><td>{{ date(task.createdAt,true) }}</td>
           <td>{{ scheduleText(task) }}<small v-if="!task.enabled" class="subline">计划已暂停</small></td>
           <td><button v-if="task.latestRun" class="link" @click="openRun(task.latestRun.id)">{{ resultText(task.latestRun) }}</button><span v-else>—</span></td>
           <td><StateBadge :state="task.latestRun?.status || 'WAITING'" :labels="{...runStates,WAITING:'待执行'}" /></td>
-          <td><div class="table-actions"><button class="link" @click="openTask(task.id)">详情</button>
-            <button v-if="session.admin && task.mode!=='BUSINESS'" class="link" :disabled="working(task)" @click="edit(task)">编辑</button>
-            <button v-if="session.admin" class="link" :disabled="working(task) || busy" @click="run(task)">{{ task.mode === 'UPLOAD' ? '上传' : task.selectResults ? '搜索' : '执行' }}</button>
+          <td class="actions-cell"><div class="table-actions"><button class="link" @click="openTask(task.id)">详情</button>
+            <button v-if="session.admin && taskActions(task).edit" class="link" :disabled="busy" @click="edit(task)">编辑</button>
+            <button v-if="session.admin && taskActions(task).inList" class="link" :disabled="busy" @click="run(task)">{{ taskActions(task).label }}</button>
           </div></td>
         </tr></tbody>
       </table>
@@ -322,11 +338,11 @@ function resultText(r) {
       </li></ul>
     </section>
     <Events :events="selectedTask.events" />
-    <template v-if="session.admin" #footer>
-      <button v-if="selectedTask.task.mode !== 'BUSINESS'" class="button secondary" :disabled="working(selectedTask.task)" @click="edit(selectedTask.task)">编辑任务</button>
-      <button class="button primary" :disabled="busy || working(selectedTask.task)" @click="run(selectedTask.task)">
+    <template v-if="session.admin && detailActions.label" #footer>
+      <button v-if="detailActions.edit" class="button secondary" :disabled="busy" @click="edit(selectedTask.task)">编辑任务</button>
+      <button class="button primary" :disabled="busy" @click="run(selectedTask.task)">
         <Upload v-if="selectedTask.task.mode === 'UPLOAD'" :size="17" /><Play v-else :size="17" />
-        {{ selectedTask.task.mode === 'UPLOAD' ? '上传文件' : '立即执行' }}
+        {{ detailActions.label }}
       </button>
     </template>
   </Drawer>

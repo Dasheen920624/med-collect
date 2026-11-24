@@ -117,8 +117,8 @@ class KnowledgeWorkflow {
             if (existing != null) return existing;
         }
         String attempt = id();
-        store.db().sql("INSERT INTO mc_parse_attempt (id,material_id,state,started_at) VALUES (:id,:material,'RUNNING',:now)")
-                .param("id",attempt).param("material",materialId).param("now",store.now()).update();
+        String reusable = claimParse(materialId, schema, attempt, request.reuseExisting());
+        if (reusable != null) return detail(reusable);
         try {
             Detail result = generate(material,request,schema,id,actor);
             finishParse(attempt,"COMPLETED");
@@ -127,6 +127,33 @@ class KnowledgeWorkflow {
             finishParse(attempt,"FAILED");
             throw e;
         }
+    }
+
+    private String claimParse(String materialId, KnowledgeTemplates.Schema schema, String attempt, boolean reuseExisting) {
+        return transactions.execute(tx -> {
+            store.db().sql("SELECT id FROM mc_material WHERE id=:material FOR UPDATE").param("material",materialId)
+                    .query(String.class).optional().orElseThrow(() -> missing("原文资料已移除"));
+            var params = new MapSqlParameterSource().addValue("material",materialId)
+                    .addValue("type",schema.category().code()).addValue("category",schema.knowledgeClass(),Types.VARCHAR);
+            if (reuseExisting) {
+                var result = store.db().sql("""
+                        SELECT id FROM mc_knowledge WHERE material_id=:material AND type_code=:type
+                        AND (knowledge_class=:category OR (knowledge_class IS NULL AND :category IS NULL))
+                        ORDER BY created_at DESC, id DESC FETCH FIRST 1 ROW ONLY
+                        """).paramSource(params).query(String.class).optional();
+                if (result.isPresent()) return result.get();
+                long active = store.db().sql("""
+                        SELECT COUNT(*) FROM mc_parse_attempt WHERE material_id=:material AND state='RUNNING' AND started_at>:since
+                        AND (type_code IS NULL OR (type_code=:type AND (class_code=:category OR (class_code IS NULL AND :category IS NULL))))
+                        """).paramSource(params.addValue("since",store.now() - MaterialService.PARSE_TIMEOUT)).query(Long.class).single();
+                if (active > 0) throw conflict("该模板正在解析，请稍后查看解析结果");
+            }
+            store.db().sql("""
+                    INSERT INTO mc_parse_attempt (id, material_id, type_code, class_code, state, started_at)
+                    VALUES (:id, :material, :type, :category, 'RUNNING', :now)
+                    """).paramSource(params.addValue("id",attempt).addValue("now",store.now())).update();
+            return null;
+        });
     }
 
     private void finishParse(String attempt,String state) {

@@ -882,6 +882,37 @@ class WorkflowIntegrationTest {
     }
 
     @Test
+    void persistsParseResultsAndReusesTheSelectedTemplateAcrossSessions() throws Exception {
+        var upload = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file","parse.txt",
+                "text/plain","Reusable original".getBytes(StandardCharsets.UTF_8))).param("title","模板复用测试")
+                .with(user("collector").roles("ADMIN")).with(csrf())));
+        String id = upload.path("materialId").asText();
+        String material = "/api/materials/"+id;
+        postBody(material+"/decision",Map.of("revision",1,"approved",true,"sourceAbstract","等待模板解析的资料。"));
+        var request = Map.of("typeCode","8-1","knowledgeClass","08","useAi",false,"reuseExisting",true);
+        store.db().sql("""
+                INSERT INTO mc_parse_attempt(id,material_id,type_code,class_code,state,started_at)
+                VALUES ('parse-in-flight',:id,'8-1','08','RUNNING',:now)
+                """).param("id",id).param("now",store.now()).update();
+        assertThat(getBody(material).path("parseState").asText()).isEqualTo("RUNNING");
+        expectConflict(material+"/drafts",request);
+        store.db().sql("UPDATE mc_parse_attempt SET state='FAILED',finished_at=:now WHERE id='parse-in-flight'")
+                .param("now",store.now()).update();
+        assertThat(getBody(material).path("parseState").asText()).isEqualTo("FAILED");
+        var result = postBody(material+"/drafts",request);
+        assertThat(getBody(material).path("parseState").asText()).isEqualTo("COMPLETED");
+        var repeated = postBody(material+"/drafts",Map.of("typeCode","8-1","knowledgeClass","08","useAi",true,
+                "reuseExisting",true,"requestId",java.util.UUID.randomUUID().toString()));
+        assertThat(repeated).isEqualTo(result);
+        assertThat(getBody(material).path("knowledge").path("total").asInt()).isOne();
+        assertThat(store.db().sql("SELECT COUNT(*) FROM mc_parse_attempt WHERE material_id=:id").param("id",id)
+                .query(Integer.class).single()).isEqualTo(2);
+        var another = postBody(material+"/drafts",Map.of("typeCode","31","knowledgeClass","17","useAi",false,"reuseExisting",true));
+        assertThat(another.path("id")).isNotEqualTo(result.path("id"));
+        assertThat(getBody(material).path("knowledge").path("total").asInt()).isEqualTo(2);
+    }
+
+    @Test
     void retriesShortLivedSourceOutages() throws Exception {
         SOURCE_ATTEMPTS.set(0);
         assertThat(sourceHttp.get(base() + "/source-transient").bytes()).isNotEmpty();
@@ -918,6 +949,15 @@ class WorkflowIntegrationTest {
         assertThat(getBody(endpoint).path("knowledge").path("status").asText()).isEqualTo("REFERENCE_ONLY");
         assertThat(getBody("/api/knowledge?human=PENDING&query=血清谷草转氨酶").path("total").asInt()).isZero();
         assertThat(getBody("/api/knowledge?sync=REFERENCE_ONLY&query=血清谷草转氨酶").path("total").asInt()).isOne();
+        store.db().sql("UPDATE mc_knowledge SET knowledge_class=NULL WHERE id=:id").param("id",draft.path("id").asText()).update();
+        var historical = postBody(endpoint+"/sync-review",Map.of("revision",currentRevision(endpoint)));
+        assertThat(historical.path("operation").asText()).isEqualTo("REFERENCE_ONLY");
+        assertThat(historical.path("target").path("id").asText()).isEqualTo("alias-legacy");
+        assertThat(historical.path("differences").findValuesAsText("field")).contains("业务类别");
+        int revision = currentRevision(endpoint);
+        expectConflict(endpoint+"/sync-review",Map.of("revision",revision,"targetId","alias-plasma","manual",true));
+        expectConflict(endpoint+"/decision",Map.of("revision",revision,"approved",true,"reviewId",historical.path("id").asText()));
+        expectConflict(endpoint+"/sync",Map.of("revision",revision));
     }
 
     private static String base() { return "http://127.0.0.1:" + REMOTE.getAddress().getPort(); }

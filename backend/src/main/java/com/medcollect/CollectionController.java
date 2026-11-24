@@ -164,7 +164,7 @@ class CollectionController {
 
     @GetMapping("/materials/{id}")
     Map<String, Object> material(@PathVariable String id) {
-        return Map.of("material", detail(store.material(id)), "runs", materials.runs(id),
+        return Map.of("material", detail(store.material(id)), "runs", materials.runs(id), "parseState", materials.parseState(id),
                 "events", store.events("MATERIAL", id), "classificationIds", classifications.materialClasses(id),
                 "knowledge", knowledge.list(null, null, id, null, null, null, null, null, 1, 20));
     }

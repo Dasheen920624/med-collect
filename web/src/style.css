@@ -509,23 +509,31 @@ th input[type=checkbox],td input[type=checkbox] { min-height: 0; width: 15px; he
 .main .page-head { margin-bottom: 12px; }
 .main .page-head h1 { font-size: 21px; }
 .scope-caption { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
-.flow-panel { padding: 5px 7px 7px; margin-bottom: 21px; }
-.flow-steps { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; padding: 0 16px 16px; }
+.overview-heading { margin-bottom: 7px; }
+.flow-panel { padding: 24px; margin-bottom: 22px; }
+.flow-panel header,.desk-columns .desk-panel header { padding: 0; margin-bottom: 21px; border-bottom: 0; }
+.flow-steps { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 16px; }
+.desk-columns { gap: 22px; }
+.recent-work,.config-shortcuts { padding: 24px; }
 .flow-steps button,.config-shortcuts button { text-align: left; color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
 .flow-steps button:hover,.config-shortcuts button:hover,.recent-task:hover { background: var(--surface-hover); border-color: var(--blue); }
-.flow-steps button { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; min-height: 250px; padding: 20px; }
-.flow-icon { color: var(--blue); background: var(--blue-tint); border-radius: 8px; padding: 6px; box-sizing: content-box; }
+.flow-steps button { display: flex; flex-direction: column; align-items: flex-start; gap: 15px; min-height: 287px; padding: 22px 20px; }
+.flow-number { display: grid; place-items: center; width: 34px; height: 34px; margin-bottom: 2px; color: var(--blue); background: var(--blue-tint); border-radius: 8px; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .flow-steps strong { font-size: 17px; }
 .flow-steps small,.config-shortcuts small,.recent-task small,.recent-label { color: var(--muted); font-size: 12px; }
 .flow-count { margin-top: auto; color: var(--muted); font-size: 12px; }
-.flow-count b { color: var(--ink); font-size: 28px; margin-right: 4px; }
-.flow-enter { color: var(--blue); font-size: 13px; }
+.flow-count b { color: #285d8a; font-size: 28px; margin-right: 4px; }
+.flow-enter { color: var(--blue); font-size: 13px; margin-top: 5px; }
 .recent-label,.recent-task,.config-shortcuts button { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-.recent-label,.recent-task { padding: 13px 20px; border-bottom: 1px solid var(--line); }
+.recent-label,.recent-task { padding: 13px 0; border-bottom: 1px solid var(--line); }
+.recent-label { margin: 0; padding-top: 0; }
+.recent-task { min-height: 80px; }
+.recent-task strong { font-weight: 500; }
 .recent-task { background: transparent; color: var(--ink); border-style: none none solid; width: 100%; text-align: left; }
 .recent-task small,.config-shortcuts small { display: block; margin-top: 5px; }
 .recent-task>span:last-child { white-space: nowrap; }
-.config-shortcuts button { margin: 0 16px 12px; padding: 13px 16px; width: calc(100% - 32px); }
+.config-shortcuts button { margin: 0 0 12px; padding: 16px 18px; min-height: 90px; width: 100%; background: #f8fafc; }
+.config-shortcuts button:last-child { margin-bottom: 0; }
 .config-shortcuts svg { color: var(--blue); }
 .delivery-summary { display: flex; flex-wrap: wrap; gap: 10px 22px; padding: 0 18px 16px; }
 .delivery-summary button { border: 0; background: transparent; padding: 4px 0; color: var(--blue); }
@@ -534,6 +542,23 @@ th input[type=checkbox],td input[type=checkbox] { min-height: 0; width: 15px; he
 .evidence-search { display:flex; gap:8px; margin:8px 0; }
 .evidence-search input { flex:1; min-width:0; }
 @media (max-width:1000px) { .flow-steps { grid-template-columns: repeat(2,minmax(0,1fr)); } .flow-steps button { min-height: 175px; } }
-@media (max-width:620px) { .shell .main { padding: 12px; } .flow-steps { gap: 8px; padding: 0 8px 8px; } .flow-steps button { padding: 12px; gap: 7px; } }
+@media (max-width:620px) { .shell .main { padding: 12px; } .flow-panel,.recent-work,.config-shortcuts { padding: 14px; } .flow-steps { gap: 8px; } .flow-steps button { padding: 12px; gap: 7px; } .desk-columns { gap: 12px; } .config-shortcuts button { min-height: 72px; } }
+
+.usage-cell,.actions-cell,.usage-cell .link,.actions-cell .link { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+th.usage-cell,th.actions-cell { width: 1%; }
+.actions-cell .table-actions { flex-wrap: nowrap; gap: 12px; }
+.usage-separator { color: var(--muted); padding: 0 3px; }
+.classification-list { min-width: 720px; }
+.classification-list td:nth-child(2) { min-width: 7em; }
+.source-list { min-width: 750px; }
+.source-list td:nth-child(2) { min-width: 7em; }
+.source-list td:nth-child(3) { min-width: 13em; width: 23%; max-width: 24em; }
+.source-list .table-url { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.source-list td:nth-child(6) { min-width: 11em; }
+.task-list,.materials-list,.knowledge-list { min-width: 880px; }
+.production-list { min-width: 730px; }
+.task-list td:nth-child(2) { min-width: 10em; }
+.task-list td:nth-child(3),.task-list td:nth-child(4),.classification-list td:nth-child(4) { white-space: nowrap; }
+.table-wrap { max-width: 100%; }
 @media (max-width:1050px) { :root { --sidebar-width:192px; } .desk-masthead { padding:22px; } .paper-cover { width:54px;height:71px; } }
 @media (max-width:650px) { .desk-masthead { display:block; } .featured-paper { width:100%; padding:15px 0 0; margin-top:17px; border:0; border-top:1px solid #cbdff5; } .paper-cover { width:44px; height:57px; } .desk-metrics button { min-height:64px; } .main { padding-top:12px; } }

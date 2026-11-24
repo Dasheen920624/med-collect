@@ -115,7 +115,7 @@ onMounted(async () => {
     </div>
     <div v-if="schema" class="template-content">
       <div class="toolbar"><h2>内容结构</h2><div class="actions">
-        <button class="link" @click="expanded=sections.map(s=>s.key)">全部展开</button><button class="link" @click="expanded=[]">全部收起</button>
+        <button v-if="sections.some(s=>!expanded.includes(s.key))" class="link" @click="expanded=sections.map(s=>s.key)">全部展开</button><button v-if="expanded.length" class="link" @click="expanded=[]">全部收起</button>
         <button class="button secondary" @click="preview=true">参数预览</button>
         <button v-if="props.session.admin" class="button primary" :disabled="busy" @click="save">保存全部</button>
         <button class="button secondary" @click="showHistory">操作日志</button></div></div>

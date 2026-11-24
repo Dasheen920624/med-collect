@@ -153,12 +153,8 @@ class MaterialService {
     record LibraryRow(@com.fasterxml.jackson.annotation.JsonUnwrapped LibraryItem material, List<String> classIds, List<String> generatedTypes) {}
     private record Assignment(String materialId, String classId) {}
 
-    Page<LibraryRow> list(String query, MaterialStatus status, String format, String classId, boolean originalsOnly,
-                          String subjectId, String domainId, String materialTypeId, Mode acquireMode, Boolean parsed, String parseState,
-                          Long fromTime, Long untilTime, int page, int size) {
-        var filters = new HashMap<String, Object>();
-        filters.put("activeSince", store.now() - java.time.Duration.ofMinutes(30).toMillis());
-        String from = """
+    static final long PARSE_TIMEOUT = java.time.Duration.ofMinutes(30).toMillis();
+    private static final String LIBRARY_FROM = """
                 FROM (SELECT s.*,
                     CASE WHEN active_count > 0 THEN 'RUNNING' WHEN last_state IN ('FAILED','RUNNING') THEN 'FAILED'
                       WHEN status='RETURNED' THEN 'CHECK' WHEN knowledge_count>0 THEN 'COMPLETED' ELSE 'UNPARSED' END parse_state,
@@ -176,6 +172,17 @@ class MaterialService {
                     (SELECT p.state FROM mc_parse_attempt p WHERE p.material_id=m.id ORDER BY COALESCE(p.finished_at,p.started_at) DESC, p.id DESC FETCH FIRST 1 ROW ONLY) last_state
                   FROM mc_material m) s) m WHERE 1=1
                 """;
+    String parseState(String id) {
+        return store.db().sql("SELECT parse_state " + LIBRARY_FROM + " AND m.id=:id")
+                .param("id", id).param("activeSince", store.now() - PARSE_TIMEOUT).query(String.class).single();
+    }
+
+    Page<LibraryRow> list(String query, MaterialStatus status, String format, String classId, boolean originalsOnly,
+                          String subjectId, String domainId, String materialTypeId, Mode acquireMode, Boolean parsed, String parseState,
+                          Long fromTime, Long untilTime, int page, int size) {
+        var filters = new HashMap<String, Object>();
+        filters.put("activeSince", store.now() - PARSE_TIMEOUT);
+        String from = LIBRARY_FROM;
         if (!trim(query).isBlank()) {
             from += " AND (INSTR(LOWER(title), :query) > 0 OR INSTR(LOWER(source_name), :query) > 0"
                     + " OR INSTR(LOWER(authors), :query) > 0 OR INSTR(LOWER(publisher), :query) > 0"

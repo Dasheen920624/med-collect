@@ -90,6 +90,17 @@ class BusinessKnowledge {
         return compare(draft, material, schema, doi, target, candidates, before);
     }
 
+    Plan reviewUnclassifiedReference(Knowledge draft, Material material, Candidate previous) {
+        var schema = workflow.schema(draft);
+        var before = snapshot(previous.id(), schema.category());
+        if (!inScope(before, draft, schema.category())) throw conflict("原对照记录的业务类型或有效状态已变化");
+        var target = candidate(before, previous.basis());
+        var doi = firstDoi(material.externalRef(), material.sourceUrl(), material.fetchedUrl());
+        var comparison = compare(draft, material, schema, doi, target, List.of(target), before);
+        return new Plan(Operation.REFERENCE_ONLY, doi, target, List.of(target), comparison.differences(),
+                before, comparison.baseline(), Map.of(), false);
+    }
+
     void verifyNoMatch(Knowledge draft, Material material) {
         var category = workflow.schema(draft).category();
         if (!candidates(draft, material, category, firstDoi(material.externalRef(), material.sourceUrl(), material.fetchedUrl())).isEmpty()) {

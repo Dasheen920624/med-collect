@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { ArrowRight, Files, Inbox, ScanText, ClipboardCheck } from '@lucide/vue'
+import { ArrowRight } from '@lucide/vue'
 import { list } from '../api'
 import { modes, scheduleText, taskState } from '../labels'
 
@@ -10,10 +10,10 @@ const stats = ref({}), recent = ref([]), error = ref(''), loading = ref(false)
 const scope = computed(() => props.directory?.find(n => n.id === props.subjectId)?.name
   || (props.subjectId === 'unassigned' ? '未关联学科' : '全部专科'))
 const steps = [
-  ['知识采集管理','取得文件和网页正文','tasks','个任务','tasks','',Inbox],
-  ['文献原文管理','查看原文、分类和来源','materials','份原文','materials','originals',Files],
-  ['静态知识解析','按知识模板整理内容','unparsed','份未解析','production','unparsed',ScanText],
-  ['知识审核管理','跟踪提交、审核与发布','pendingKnowledge','条待审核','knowledge','pending',ClipboardCheck],
+  ['知识采集管理','取得文件和网页正文','tasks','个任务','tasks',''],
+  ['文献原文管理','查看原文、分类和来源','materials','份原文','materials','originals'],
+  ['静态知识解析','按知识模板整理内容','unparsed','份未解析','production','unparsed'],
+  ['知识审核管理','跟踪提交、审核与发布','pendingKnowledge','条待审核','knowledge','pending'],
 ]
 const configuration = [
   ['知识来源配置','维护采集网址、授权和启用状态','sources'],
@@ -37,13 +37,13 @@ watch(() => props.subjectId, async (subjectId, _, cleanup) => {
 </script>
 <template>
   <p class="scope-caption">{{ scope }}</p>
-  <section class="page-head"><h1>知识采集概览</h1></section>
+  <section class="page-head overview-heading"><h1>知识采集概览</h1></section>
   <p v-if="error" class="message error" role="alert">{{ error }}</p>
   <section class="desk-panel flow-panel">
     <header><h2>知识采集与处理</h2><span>{{ scope }}</span></header>
     <div class="flow-steps">
-      <button v-for="[name,description,key,unit,view,detail,icon] in steps" :key="view" @click="emit('navigate',view,detail)">
-        <component :is="icon" :size="23" class="flow-icon"/><strong>{{ name }}</strong><small>{{ description }}</small>
+      <button v-for="([name,description,key,unit,view,detail],index) in steps" :key="view" @click="emit('navigate',view,detail)">
+        <span class="flow-number" aria-hidden="true">{{ String(index + 1).padStart(2,'0') }}</span><strong>{{ name }}</strong><small>{{ description }}</small>
         <span class="flow-count"><b>{{ stats[key] ?? '—' }}</b> {{ unit }}</span><span class="flow-enter">进入 <ArrowRight :size="15"/></span>
       </button>
     </div>

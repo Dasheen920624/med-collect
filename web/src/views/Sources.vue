@@ -74,12 +74,12 @@ onMounted(load)
   </section>
   <p v-if="issue" class="message error" role="alert">{{ issue }}</p>
   <section class="panel"><div v-if="sources.length" class="table-wrap">
-    <table><thead><tr><th>序号</th><th>来源名称</th><th>采集地址</th><th>授权状态</th><th>状态</th><th>备注</th><th>使用情况</th><th>操作</th></tr></thead>
+    <table class="source-list"><thead><tr><th>序号</th><th>来源名称</th><th>采集地址</th><th>授权状态</th><th>状态</th><th>备注</th><th class="usage-cell">使用情况</th><th v-if="session.admin" class="actions-cell">操作</th></tr></thead>
       <tbody><tr v-for="(item,i) in visible" :key="item.id">
-        <td>{{ (page-1)*size+i+1 }}</td><td>{{ item.name }}</td><td><a class="table-url" :href="item.url" target="_blank" rel="noopener noreferrer">{{ item.url }}</a></td>
+        <td>{{ (page-1)*size+i+1 }}</td><td>{{ item.name }}</td><td><a class="table-url" :href="item.url" :title="item.url" target="_blank" rel="noopener noreferrer">{{ item.url }}</a></td>
         <td>{{ accessLabels[item.accessState] }}</td><td><StateBadge :state="item.enabled ? 'ACTIVE' : 'OFF'" :labels="{ ACTIVE: '启用', OFF: '停用' }" /></td>
-        <td>{{ item.note || '—' }}</td><td><button class="link" @click="showUsage(item)">{{ item.taskCount }} 个任务</button></td>
-        <td><div v-if="session.admin" class="table-actions"><button class="link" @click="edit(item)">编辑</button><button class="link" :disabled="busy" @click="toggle(item)">{{ item.enabled ? '停用' : '启用' }}</button></div></td>
+        <td>{{ item.note || '—' }}</td><td class="usage-cell"><button v-if="item.taskCount" class="link" @click="showUsage(item)">{{ item.taskCount }} 个任务</button><span v-else>0 个任务</span></td>
+        <td v-if="session.admin" class="actions-cell"><div class="table-actions"><button class="link" @click="edit(item)">编辑</button><button class="link" :disabled="busy" @click="toggle(item)">{{ item.enabled ? '停用' : '启用' }}</button></div></td>
       </tr></tbody></table></div>
     <EmptyState v-else title="暂无资料来源" detail="添加常用站点后，可在新建采集任务时直接引用。" />
     <Pagination :page="page" :size="size" :total="sources.length" resizable @change="page=$event" @resize="size=$event;page=1" />

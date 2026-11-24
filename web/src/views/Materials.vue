@@ -1,8 +1,8 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Download, ExternalLink, FileText, Search, Sparkles, Upload } from '@lucide/vue'
 import { api, list, original, send } from '../api'
-import { date, dateRange, materialStates, modes, selection, size } from '../labels'
+import { date, dateRange, knowledgeStates, materialStates, modes, selection, size } from '../labels'
 import PdfReader from '../components/PdfReader.vue'
 import DirectoryTree from '../components/DirectoryTree.vue'
 import UploadOriginal from '../components/UploadOriginal.vue'
@@ -36,7 +36,17 @@ const freshFilters = () => ({ query: '', status: '', format: '', classId: '', or
 const parseStates = { UNPARSED:'未解析', RUNNING:'处理中', COMPLETED:'已完成', CHECK:'需核对', FAILED:'失败' }
 const filters = ref(freshFilters())
 const pageSize = ref(10)
-const parseFocus = ref(false)
+const detailMode = ref('original')
+const parseFocus = computed(() => ['parse','results','progress'].includes(detailMode.value))
+const actionLabels = { progress:'查看进度', results:'查看解析结果', review:'审核原文', check:'核对原文', retry:'重试解析', parse:'AI解析' }
+function parseAction(state, count, status) {
+  if (state === 'RUNNING') return 'progress'
+  if (count) return 'results'
+  if (status !== 'APPROVED') return status === 'RETURNED' ? 'check' : 'review'
+  return state === 'FAILED' ? 'retry' : 'parse'
+}
+const rowAction = row => parseAction(row.parseState, row.knowledgeCount, row.status)
+let detailRequest = 0, poll
 let request = 0
 const groups = { SUBJECT: '学科病种', DOMAIN: '知识类别', MATERIAL: '资料类型' }
 const formats = ['PDF', 'HTML', 'DOCX', 'TXT', 'CSV', 'XLS', 'XLSX', 'METADATA']
@@ -138,20 +148,27 @@ async function load(page = 1) {
 }
 
 async function openMaterial(id, purpose = '') {
+  const seq = ++detailRequest
   try {
-    item.value = await api('/materials/' + id)
+    const detail = await api('/materials/' + id)
+    if (seq !== detailRequest) return
+    item.value = detail
     summary.value = item.value.material.sourceAbstract || ''
     notes.value = ''
     queue.value = []
     confirmingRemoval.value = false
     removalReason.value = ''
-    parseFocus.value = purpose === 'parse' && item.value.material.status === 'APPROVED'
+    const action = parseAction(detail.parseState, detail.knowledge.total, detail.material.status)
+    if (purpose === 'append' && detail.material.status === 'APPROVED' && action !== 'progress') detailMode.value = 'parse'
+    else if (purpose === 'preview') detailMode.value = 'original'
+    else if (purpose || props.parseOnly) detailMode.value = action === 'retry' ? 'parse' : action
+    else detailMode.value = 'original'
     preview.value = purpose === 'preview' && item.value.material.formatCode === 'PDF'
     showExtract.value = purpose === 'preview' && !preview.value
     chosen.value = { typeCode: '', knowledgeClass: '' }
     classes.value = []
     panelError.value = ''
-    if (purpose==='parse' && item.value.material.status==='APPROVED') {
+    if (detailMode.value === 'parse') {
       const material=item.value.material
       const source=material.sourceName==='4.23 知识管理' && /^CDSS:([^: ]+):[^: ]+:([^ ]*)/.exec(material.externalRef || '')
       const marked=classifications.value.filter(n=>item.value.classificationIds?.includes(n.id) && n.enabled && n.remoteKey)
@@ -225,13 +242,13 @@ async function draft(useAi) {
       row.useAi ??= useAi
       try {
         const result = await send('/materials/' + materialId + '/drafts', {
-          typeCode:row.typeCode, knowledgeClass:row.knowledgeClass, useAi:row.useAi, requestId:row.requestId,
+          typeCode:row.typeCode, knowledgeClass:row.knowledgeClass, useAi:row.useAi, requestId:row.requestId, reuseExisting:true,
         })
         row.id = result.id
       } catch (e) { row.error = e.message }
     }
     if (queue.value.some(r => !r.id)) { panelError.value = '部分模板尚未完成，可核对错误后重试。'; await load(table.value.page); return }
-    emit('notice', '已生成 ' + queue.value.length + ' 条知识草稿')
+    emit('notice', '已打开 ' + queue.value.length + ' 条知识结果')
     emit('navigate', 'knowledge', queue.value.length === 1 ? queue.value[0].id : 'material:' + materialId)
   } catch (e) { panelError.value = e.message }
   finally {
@@ -263,11 +280,20 @@ async function applyDetail(detail) {
 }
 
 onMounted(async () => {
+  poll = window.setInterval(async () => {
+    if (document.hidden || busy.value || loading.value || !props.parseOnly) return
+    if (item.value && detailMode.value === 'progress') {
+      await openMaterial(item.value.material.id, 'progress')
+      await load(table.value.page)
+    } else if (!item.value && table.value.rows.some(row => row.parseState === 'RUNNING')) await load(table.value.page)
+  }, 5000)
   await Promise.all([load(), api('/categories').then(value => { categories.value = value }).catch(e => { error.value = e.message })])
   await applyDetail(props.detail)
 })
+onUnmounted(() => { clearInterval(poll); detailRequest++ })
+function closeMaterial() { detailRequest++; item.value = null }
 watch(() => props.detail, async detail => {
-  item.value = null
+  closeMaterial()
   uploadForm.value = null
   classificationForm.value = null
   filters.value = freshFilters()
@@ -306,12 +332,12 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
         <button v-if="filters.classId" type="button" class="link" @click="filters.classId = ''; load()">清除分类筛选</button>
       </form>
       <div v-if="table.rows.length" class="table-wrap">
-        <table><thead><tr><th v-if="!parseOnly"><input type="checkbox" aria-label="选择当前页资料" :checked="selectedRows.length === table.rows.length"
+        <table :class="parseOnly ? 'production-list' : 'materials-list'"><thead><tr><th v-if="!parseOnly"><input type="checkbox" aria-label="选择当前页资料" :checked="selectedRows.length === table.rows.length"
           :indeterminate="selectedRows.length > 0 && selectedRows.length < table.rows.length"
           @change="selectedRows = $event.target.checked ? table.rows.map(r => r.id) : []" /></th>
           <th>序号</th><th>{{ parseOnly ? '原文资料' : '资料名称' }}</th>
           <template v-if="parseOnly"><th>解析意图 / 已生成</th><th>解析状态</th><th>生成知识</th><th>更新时间</th></template>
-          <template v-else><th>资料类型</th><th>知识类别</th><th>文件格式</th><th>获取方式</th><th>采集时间</th></template><th>操作</th></tr></thead>
+          <template v-else><th>资料类型</th><th>知识类别</th><th>文件格式</th><th>获取方式</th><th>采集时间</th></template><th class="actions-cell">操作</th></tr></thead>
           <tbody><tr v-for="(row,i) in table.rows" :key="row.id">
             <td v-if="!parseOnly"><input type="checkbox" v-model="selectedRows" :value="row.id" :aria-label="'选择 ' + row.title" /></td>
             <td>{{ (table.page-1)*table.size+i+1 }}</td>
@@ -323,12 +349,10 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
               <td>{{ date(row.lastParsedAt) }}</td></template>
             <template v-else><td>{{ namesOf(row,'MATERIAL') }}</td><td>{{ namesOf(row,'DOMAIN') }}</td>
               <td>{{ row.formatCode === 'METADATA' ? '来源记录' : row.formatCode }}</td><td>{{ modes[row.acquireMode] || '—' }}</td><td>{{ date(row.capturedAt) }}</td></template>
-            <td><div class="table-actions">
+            <td class="actions-cell"><div class="table-actions">
               <template v-if="!parseOnly"><button class="link" :aria-label="'查看原文：'+row.title" @click="openMaterial(row.id,'preview')">原文</button>
                 <a :href="original(row.id)" :aria-label="'下载原件：'+row.title">下载</a></template>
-              <button v-if="row.status !== 'APPROVED'" class="link" @click="openMaterial(row.id)">审核原文</button>
-              <button v-else-if="parseOnly || !row.knowledgeCount" class="link" @click="openMaterial(row.id,'parse')">{{ parseOnly ? 'AI解析' : '解析' }}</button>
-              <button v-if="!parseOnly && row.knowledgeCount" class="link" @click="emit('navigate','knowledge','material:' + row.id)">结果</button>
+              <button class="link" @click="openMaterial(row.id,rowAction(row))">{{ actionLabels[rowAction(row)] }}</button>
             </div></td>
           </tr></tbody></table></div>
       <EmptyState v-else :title="loading ? '正在查询原文' : '暂无匹配原文'" />
@@ -337,7 +361,7 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
   </div>
   <UploadOriginal v-if="uploadForm" :task-id="uploadForm.taskId" :directory="directory" @close="uploadForm = null" @notice="emit('notice',$event)" @complete="uploaded" />
 
-  <Drawer v-if="item" :title="item.material.title" :subtitle="parseFocus ? 'AI解析 · 选择知识模板' : '原文详情'" wide :busy="busy" @close="item = null">
+  <Drawer v-if="item" :title="item.material.title" :subtitle="({parse:'AI解析 · 选择知识模板',results:'解析结果',progress:'解析进度'})[detailMode] || '原文详情'" wide :busy="busy" @close="closeMaterial">
     <div class="toolbar">
       <StateBadge :state="item.material.status" :labels="materialStates" />
       <div class="actions">
@@ -367,18 +391,25 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
       <textarea v-else v-model="summary" aria-label="原文摘要" rows="5" maxlength="12000" placeholder="可根据已核验的原件补充摘要"></textarea>
       <details v-if="item.material.rawText" class="raw-text" :open="showExtract"><summary>查看提取文本</summary><pre>{{ item.material.rawText }}</pre></details>
     </section>
-    <section v-if="item.knowledge.total && !parseFocus" class="form-section">
-      <h3>已生成的知识</h3>
+    <section v-if="detailMode === 'progress'" class="form-section" role="status">
+      <h3>正在解析</h3><p>完成后将自动显示解析结果。关闭窗口后可从列表查看。</p>
+    </section>
+    <section v-if="item.knowledge.total && detailMode !== 'parse'" class="form-section" aria-label="已生成的知识">
+      <div class="toolbar"><h3>已生成的知识 · {{ item.knowledge.total }} 条</h3>
+        <button v-if="item.material.status === 'APPROVED' && item.parseState !== 'RUNNING'" class="link" @click="openMaterial(item.material.id,'append')">{{ item.parseState === 'FAILED' ? '重试其他模板' : '追加解析模板' }}</button></div>
       <ul class="simple-list"><li v-for="entry in item.knowledge.rows" :key="entry.id">
-        <button class="link" @click="emit('navigate', 'knowledge', entry.id)">{{ entry.title }}</button><span>{{ date(entry.updatedAt) }}</span>
+        <button class="link" @click="emit('navigate', 'knowledge', entry.id)">{{ entry.title }}</button>
+        <span>{{ categories.find(c => c.code === entry.typeCode)?.name || entry.typeCode }} · {{ knowledgeStates[entry.status] }} · {{ date(entry.updatedAt) }}</span>
       </li></ul>
+      <button v-if="item.knowledge.total > item.knowledge.rows.length" class="link" @click="emit('navigate','knowledge','material:' + item.material.id)">查看全部 {{ item.knowledge.total }} 条</button>
     </section>
     <section v-if="item.material.status !== 'APPROVED'" class="form-section form-grid">
       <h3>原文审核</h3>
       <label>审核意见<textarea v-model.trim="notes" rows="3" maxlength="1000" placeholder="退回时需填写原因"></textarea></label>
     </section>
-    <section v-else class="form-section form-grid">
+    <section v-else-if="detailMode === 'parse'" class="form-section form-grid">
       <h3><Sparkles :size="18" /> 解析模板</h3>
+      <p v-if="item.knowledge.total" class="muted">选择其他知识类型或子类可追加解析。选择已有模板将直接打开保存的结果。</p>
       <div class="two-fields">
         <label>知识类型<select v-model="chosen.typeCode" :disabled="busy" @change="chooseType">
           <option value="">选择 4.23 知识类型</option><option v-for="entry in categories" :key="entry.code" :value="entry.code">{{ entry.name }}</option>
@@ -398,10 +429,10 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
         <button class="button primary" :disabled="busy || (!canAdd && !queue.length) || queue.some(r => r.useAi === false)" @click="draft(true)">
           <Sparkles :size="17" /> {{ parseMode === 'AI' ? '正在解析…' : '模型解析' }}
         </button>
-        <button class="link" @click="emit('navigate', 'knowledge', 'material:' + item.material.id)">查看此原文的知识</button>
+        <button v-if="item.knowledge.total" class="link" :disabled="busy" @click="openMaterial(item.material.id,'results')">返回已有结果</button>
       </div>
     </section>
-    <section v-if="session.admin && item.knowledge.rows.every(k => ['PENDING','DRAFT','RETURNED','REFERENCE_ONLY'].includes(k.status))" class="form-section">
+    <section v-if="!parseFocus && item.parseState !== 'RUNNING' && session.admin && item.knowledge.total === item.knowledge.rows.length && item.knowledge.rows.every(k => !k.remoteId && !k.syncPhase && ['PENDING','DRAFT','RETURNED','REFERENCE_ONLY'].includes(k.status))" class="form-section">
       <button v-if="!confirmingRemoval" class="link" @click="confirmingRemoval = true">移除这份资料</button>
       <template v-else>
         <p>将永久移除本地原件和关联的未审批稿件。</p>
@@ -419,8 +450,11 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
     </section>
     <Events v-if="!parseFocus" :events="item.events" />
     <template v-if="item.material.status !== 'APPROVED'" #footer>
-      <button class="button secondary" :disabled="busy" @click="review(false)">退回原文</button>
+      <button v-if="item.material.status === 'PENDING'" class="button secondary" :disabled="busy" @click="review(false)">退回原文</button>
       <button class="button primary" :disabled="busy" @click="review(true)">原文审核通过</button>
+    </template>
+    <template v-else-if="!parseFocus && !item.knowledge.total" #footer>
+      <button class="button primary" @click="openMaterial(item.material.id,'parse')">{{ item.parseState === 'RUNNING' ? '查看进度' : item.parseState === 'FAILED' ? '重试解析' : 'AI解析' }}</button>
     </template>
   </Drawer>
   <Drawer v-if="classificationForm" :title="classificationForm.materialIds.length > 1 ? '批量分类' : '资料分类'"

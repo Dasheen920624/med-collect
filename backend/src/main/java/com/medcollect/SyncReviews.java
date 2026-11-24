@@ -69,12 +69,21 @@ class SyncReviews {
         var proposed = separated ? draft.withText(text.summary(),write(text.fields())) : draft;
         BusinessKnowledge.Plan plan;
         try {
-            if (draft.status() == KnowledgeStatus.REFERENCE_ONLY && trim(targetId).isBlank()) {
-                var previous = review(id).map(row -> readPlan(row.planJson())).orElseThrow(() -> conflict("请重新选择业务对照记录"));
-                targetId = previous.target().id();
-                manual = "人工指定同类业务知识".equals(previous.target().basis());
+            if (draft.status() == KnowledgeStatus.REFERENCE_ONLY && trim(draft.knowledgeClass()).isBlank()) {
+                var previous = review(id).map(row -> readPlan(row.planJson())).orElseThrow(() -> conflict("原业务对照记录缺失"));
+                if (previous.operation() != REFERENCE_ONLY || previous.target() == null ||
+                        (!trim(targetId).isBlank() && !previous.target().id().equals(targetId))) {
+                    throw conflict("未分类的历史对照稿只能复核原对照记录");
+                }
+                plan = business.reviewUnclassifiedReference(proposed,material,previous.target());
+            } else {
+                if (draft.status() == KnowledgeStatus.REFERENCE_ONLY && trim(targetId).isBlank()) {
+                    var previous = review(id).map(row -> readPlan(row.planJson())).orElseThrow(() -> conflict("请重新选择业务对照记录"));
+                    targetId = previous.target().id();
+                    manual = "人工指定同类业务知识".equals(previous.target().basis());
+                }
+                plan = manual ? business.manualPlan(proposed,material,targetId) : business.plan(proposed,material,targetId);
             }
-            plan = manual ? business.manualPlan(proposed,material,targetId) : business.plan(proposed,material,targetId);
         } catch (CdssClient.RemoteFailure e) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage(), e);
         }
