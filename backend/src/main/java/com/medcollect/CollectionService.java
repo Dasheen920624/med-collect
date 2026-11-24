@@ -27,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 class CollectionService {
+    static final int MAX_TARGETS = 100;
     private static final Logger log = LoggerFactory.getLogger(CollectionService.class);
     private record Target(String url, Source source) {}
     private static class Counts {
@@ -162,7 +163,7 @@ class CollectionService {
                 .distinct().toList();
         String sourceId = namedTargets ? sourceIds.stream().findFirst().orElse(null) :
                 trim(input.sourceId()).isBlank() ? null : store.source(input.sourceId()).id();
-        if (sourceIds.size() + urls.size() > 20) throw bad("单个任务最多配置 20 个采集目标");
+        if (sourceIds.size() + urls.size() > MAX_TARGETS) throw bad("单个任务最多配置 " + MAX_TARGETS + " 个采集目标");
         if (urls.stream().anyMatch(u -> u.length() > 1000)) throw bad("资料地址超过 1000 字符");
         if (input.mode() != Mode.URL && !urls.isEmpty()) throw bad("仅指定网址任务支持额外采集地址");
         String query = trim(input.queryText());

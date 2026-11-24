@@ -4,8 +4,13 @@ import static com.medcollect.Support.*;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -29,7 +34,7 @@ class SourceHttp {
     private final CloseableHttpClient http;
 
     record Download(URI uri, String contentType, String disposition, byte[] bytes) {}
-    private record Hop(int status, String location, Download download) {}
+    private record Hop(int status, String location, Download download, String retryAfter) {}
 
     SourceHttp(AppSettings settings) {
         List<String> allowed = settings.privateSourceHosts() == null ? List.of() : settings.privateSourceHosts();
@@ -66,28 +71,73 @@ class SourceHttp {
                     && (!"https".equalsIgnoreCase(uri.getScheme()) || (uri.getPort() != -1 && uri.getPort() != 443))) {
                 throw new IOException("Europe PMC 代理地址只支持标准 HTTPS");
             }
-            var captured = uri;
-            Hop hop = http.execute(new HttpGet(uri), response -> {
-                int status = response.getCode();
-                if (status >= 300 && status < 400 && response.getFirstHeader("Location") != null) {
-                    return new Hop(status, response.getFirstHeader("Location").getValue(), null);
-                }
-                if (status < 200 || status >= 300 || response.getEntity() == null) return new Hop(status, null, null);
-                var entity = response.getEntity();
-                if (entity.getContentLength() > DocumentReader.MAX_BYTES) throw new IOException("原件超过 20 MB");
-                var header = response.getFirstHeader("Content-Disposition");
-                try (var stream = entity.getContent()) {
-                    byte[] bytes = stream.readNBytes(DocumentReader.MAX_BYTES + 1);
-                    if (bytes.length > DocumentReader.MAX_BYTES) throw new IOException("原件超过 20 MB");
-                    return new Hop(status, null, new Download(captured, entity.getContentType(),
-                            header == null ? "" : header.getValue(), bytes));
-                }
-            });
+            Hop hop = fetchHop(uri);
             if (hop.download() != null) return hop.download();
             if (hop.location() == null) throw new IOException("来源返回 HTTP " + hop.status());
             uri = httpUri(uri.resolve(hop.location()).toString());
         }
         throw new IOException("来源重定向次数过多");
+    }
+
+    private Hop fetchHop(URI uri) throws IOException {
+        for (int attempt = 0; ; attempt++) {
+            Hop hop;
+            try {
+                hop = request(uri);
+            } catch (SocketTimeoutException | org.apache.hc.core5.http.NoHttpResponseException transientFailure) {
+                if (attempt > 0) throw transientFailure;
+                pause(500);
+                continue;
+            }
+            if (attempt > 0 || !Set.of(408, 429, 502, 503, 504).contains(hop.status())) return hop;
+            long delay = retryDelay(hop.retryAfter());
+            if (delay < 0 || delay > 2000) return hop;
+            pause(delay);
+        }
+    }
+
+    static long retryDelay(String header) {
+        if (header == null || header.isBlank()) return 500;
+        try {
+            if (header.matches("[0-9]+")) return Math.multiplyExact(Long.parseLong(header), 1000);
+            Instant date = ZonedDateTime.parse(header, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
+            return Math.max(0, Duration.between(Instant.now(), date).toMillis());
+        } catch (RuntimeException invalid) {
+            return -1;
+        }
+    }
+
+    private void pause(long millis) throws IOException {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("采集请求已中断", e);
+        }
+    }
+
+    private Hop request(URI uri) throws IOException {
+        HttpGet get = new HttpGet(uri);
+        get.setHeader("Accept-Language", "zh-CN,zh-TW;q=0.9,en;q=0.7");
+        return http.execute(get, response -> {
+            int status = response.getCode();
+            if (status >= 300 && status < 400 && response.getFirstHeader("Location") != null) {
+                return new Hop(status, response.getFirstHeader("Location").getValue(), null, null);
+            }
+            if (status < 200 || status >= 300 || response.getEntity() == null) {
+                var retry = response.getFirstHeader("Retry-After");
+                return new Hop(status, null, null, retry == null ? null : retry.getValue());
+            }
+            var entity = response.getEntity();
+            if (entity.getContentLength() > DocumentReader.MAX_BYTES) throw new IOException("原件超过 20 MB");
+            var header = response.getFirstHeader("Content-Disposition");
+            try (var stream = entity.getContent()) {
+                byte[] bytes = stream.readNBytes(DocumentReader.MAX_BYTES + 1);
+                if (bytes.length > DocumentReader.MAX_BYTES) throw new IOException("原件超过 20 MB");
+                return new Hop(status, null, new Download(uri, entity.getContentType(),
+                        header == null ? "" : header.getValue(), bytes), null);
+            }
+        });
     }
 
     private InetAddress[] addresses(String host) throws UnknownHostException {

@@ -36,8 +36,8 @@ final class Records {
                      @Min(1) @Max(100) int resultLimit, @Min(0) @Max(525600) int intervalMinutes,
                      boolean enabled, Integer revision, ScheduleMode scheduleMode, Long scheduleAt,
                      @Size(max = 5) String dailyTime, boolean selectResults,
-                     @Size(max = 20) List<@NotBlank @Size(max = 36) String> sourceIds,
-                     @Size(max = 20) List<@NotBlank @Size(max = 1000) String> urls) {}
+                     @Size(max = CollectionService.MAX_TARGETS) List<@NotBlank @Size(max = 36) String> sourceIds,
+                     @Size(max = CollectionService.MAX_TARGETS) List<@NotBlank @Size(max = 1000) String> urls) {}
     record Run(String id, String taskId, RunStatus status, String actor, long startedAt, Long finishedAt,
                int newCount, int duplicateCount, int failureCount, String note, String parentRunId, int metadataCount) {}
     record RunResult(String id, String runId, String materialId, String title, String url, String status, String note,

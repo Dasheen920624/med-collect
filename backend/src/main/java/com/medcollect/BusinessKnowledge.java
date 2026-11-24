@@ -46,6 +46,14 @@ class BusinessKnowledge {
             "submitStatus", "auditStatus", "releaseStatus", "content", "doi");
     private static final String REFERENCES = "references";
     private static final String MANUAL_TARGET = "人工指定同类业务知识";
+    private static final String ALIAS_TARGET = "同类说明书的项目名称等价";
+    private static final List<List<String>> MANUAL_NAMES = List.of(
+            List.of("天冬氨酸氨基转移酶", "谷草转氨酶", "谷草转氨基酶"),
+            List.of("丙氨酸氨基转移酶", "谷丙转氨酶", "谷丙转氨基酶"),
+            List.of("甲状腺B型超声", "甲状腺B超", "甲状腺超声"),
+            List.of("变应原特异性", "过敏原特异性"),
+            List.of("超声心动图", "心脏超声心动图"),
+            List.of("促甲状腺激素", "促甲状腺素"));
     private final ObjectMapper json;
     private final CdssClient cdss;
     private final KnowledgeTemplates templates;
@@ -139,6 +147,14 @@ class BusinessKnowledge {
         } else {
             var terms = new LinkedHashSet<String>();
             terms.add(titleQuery(draft.title()));
+            if ("8".equals(category.type())) {
+                String title = manualStem(draft.title());
+                if (titleKey(title).length() >= 2) terms.add(titleQuery(title));
+                for (var names : MANUAL_NAMES) {
+                    String found = equivalentPart(title, names);
+                    if (found != null) names.forEach(name -> terms.add(titleQuery(title.replace(found, name))));
+                }
+            }
             if (isLiterature(category.type())) terms.add(titleQuery(material.title()));
             terms.remove("");
             for (String title : terms) {
@@ -175,7 +191,12 @@ class BusinessKnowledge {
         return category.type().equals(item.path("type").asText())
                 && item.path("validFlag").asInt(1) == 1
                 && trim(category.childType()).equals(item.path("childType").asText(""))
-                && (trim(draft.knowledgeClass()).isBlank() || draft.knowledgeClass().equals(item.path("knowledgeClass").asText()));
+                && (trim(draft.knowledgeClass()).isBlank() || draft.knowledgeClass().equals(item.path("knowledgeClass").asText(""))
+                    || (legacyManualScope(category, draft) && item.path("knowledgeClass").asText("").isBlank()));
+    }
+
+    private boolean legacyManualScope(KnowledgeTemplates.Category category, Knowledge draft) {
+        return "8".equals(category.type()) && "08".equals(draft.knowledgeClass());
     }
 
     private Map<String,String> scope(KnowledgeTemplates.Category category, Knowledge draft) {
@@ -183,11 +204,17 @@ class BusinessKnowledge {
         filters.put("type", category.type());
         if (List.of("17","30","31").contains(category.type())) filters.put("guideType", category.type());
         if (category.childType() != null) filters.put("childType", category.childType());
-        if (!trim(draft.knowledgeClass()).isBlank()) filters.put("knowledgeClass", draft.knowledgeClass());
+        if (!trim(draft.knowledgeClass()).isBlank() && !legacyManualScope(category, draft)) filters.put("knowledgeClass", draft.knowledgeClass());
         return filters;
     }
 
     private String match(JsonNode row, Knowledge draft, Material material, String doi) {
+        if ("8".equals(row.path("type").asText())) {
+            String name = row.path("name").asText("");
+            if (name.isBlank()) return null;
+            if (name.equals(draft.title())) return "类别及知识标题一致";
+            return manualKey(name).equals(manualKey(draft.title())) ? ALIAS_TARGET : null;
+        }
         String existing = titleKey(row.path("name").asText());
         if (!isLiterature(row.path("type").asText())) {
             return !existing.isBlank() && existing.equals(titleKey(draft.title())) ? "类别及知识标题一致" : null;
@@ -214,7 +241,8 @@ class BusinessKnowledge {
         ObjectNode oldLayout = layout(original);
         ObjectNode merged = oldLayout == null ? incoming.deepCopy() : oldLayout.deepCopy();
         var changes = new ArrayList<Difference>();
-        String savedTitle = MANUAL_TARGET.equals(target.basis()) ? original.path("name").asText() : draft.title();
+        String savedTitle = MANUAL_TARGET.equals(target.basis()) || ALIAS_TARGET.equals(target.basis())
+                ? original.path("name").asText() : draft.title();
         add(changes, "标题", original.path("name").asText(), savedTitle);
         if (oldLayout == null && !original.path("content").asText("").isBlank()) {
             add(changes, "原有正文", display(original.path("content")), "按已审核稿件转换为模板正文");
@@ -565,5 +593,24 @@ class BusinessKnowledge {
     private String titleKey(String title) {
         return Normalizer.normalize(trim(title), Normalizer.Form.NFKC).toLowerCase(Locale.ROOT)
                 .replaceAll("[^\\p{L}\\p{N}]", "");
+    }
+
+    private String manualStem(String title) {
+        return Normalizer.normalize(trim(title), Normalizer.Form.NFKC).strip()
+                .replaceFirst("(?:的)?(?:测定|检测|检查)$", "");
+    }
+
+    private String equivalentPart(String title, List<String> names) {
+        return names.stream().filter(title::contains).max(Comparator.comparingInt(String::length)).orElse(null);
+    }
+
+    private String manualKey(String name) {
+        String value = manualStem(name);
+        for (var names : MANUAL_NAMES) {
+            String found = equivalentPart(value, names);
+            if (found != null) value = value.replace(found, names.getFirst());
+        }
+        // Preserve qualifiers such as IgG versus IgM, antigen panels, timing and positive/negative markers.
+        return value.toLowerCase(Locale.ROOT).replaceAll("[\\s()（）]+", "");
     }
 }

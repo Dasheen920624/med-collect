@@ -19,6 +19,28 @@
 
 服务器上的部署文档和交接记录为 `/zoesoft/med-collect/deployment.md` 与 `/zoesoft/med-collect/handoff.md`。
 
+## 大批量网址采集
+
+2026-11-24 在 3.27 部署了 `med-collect:0.1.8-20261124-e59e5b99b8c9`，继续使用 Oracle 与现有原件卷。发行目录中 JAR 的 SHA-256 为 `e59e5b99b8c977925c7ea3358c7daaa335a57a1fcb68f0d4ba2bbd2dd19c6f05`。
+
+将公开原件网址逐行写进 UTF-8 文本。在部署目录运行下面的命令。工具使用 Python 3 标准库，交互式读取采集账号和密码。更换来源列表或批大小时使用新的回执文件。
+
+~~~bash
+cd /zoesoft/med-collect
+python3 collect_urls.py sources.txt --name 中文说明书 --plan
+python3 collect_urls.py sources.txt --name 中文说明书 --base http://192.168.3.27:18085 --report collection-receipt.json
+~~~
+
+同一来源列表内自动去重，每个任务最多 100 个网址。可用 `--batch-size` 调小每批数量。中断后重跑第二条命令会恢复已有任务和执行记录。回执列有每个网址的执行状态及原件 ID，`missingOriginals` 给出仍需补采的地址。可把这些地址写入另一份列表再次采集。工具只办理原件采集。
+
+来源短暂超时或返回 408、429、502、503、504 时，采集端最多重试一次。服务端要求等待超过两秒的请求保留失败回执，可稍后重跑。模型分析 PDF 时始终请求中文摘要；扩展字段为空时仍会提取摘要。模型输出了无效 JSON 或空摘要时，会携带同一段原文再请求一次。连续失败可从原件详情重新解析。
+
+正式批次的文件位于 `/zoesoft/med-collect/operations/manuals-net400-20261124/`。将 `review.html` 下载到可访问内网的工作机打开，即可按项目、字典编码和来源筛选，进入真实待审稿。原件由 `/zoesoft/med-collect/state/originals/` 持久化。交接包中的 `audited-creates.json`、`oracle-readback.json` 和 `native-readback.json` 分别保存逐份复核、Oracle 核验和业务字典回读结果。
+
+在 3.27 的该批次目录运行 `python3 readback.py` 可重新核验审批前快照。已有稿件进入人工审核或同步阶段时，应以稿件详情的最新状态、业务主键和版本回执核对。[说明书验收](collection-audit.md#2026-11-24-拟新增说明书逐份复验)
+
+## 首次安装与账号
+
 SSH 使用运维方登记的主机指纹。管理员和可选的审核员在首次部署时从启动配置导入 Oracle，之后可在「用户管理」维护账号。
 
 首次部署按 README 的变量表准备 `config/app.env`，将 `deploy/compose.yaml` 放在部署目录。用 `10001:10001` 创建 `state/`，再将首个发行所用的镜像标签和发布地址写入 `release.env`。例如 `MEDCOLLECT_IMAGE=med-collect:<发行标识>` 和 `MEDCOLLECT_PUBLISH_HOST=127.0.0.1`，端口可用 `MEDCOLLECT_PUBLISH_PORT` 调整。[变量与构建说明](../README.md#oracle-与内网运行)
@@ -136,7 +158,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.7'
+$version = '0.1.8'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)
@@ -255,3 +277,18 @@ Liquibase 的 `007-business-catalog.xml` 包含分类来源列、唯一索引和
 ~~~
 
 应用回滚复用现有 Oracle 数据。涉及数据库兼容性的版本按对应迁移方案处理。
+
+## 中文说明书批次数据
+
+2026-11-23 的说明书通过运行中的 0.1.7 工作台入库。Oracle 用户为 `ZYMEDCOLLECT`，经只读查询确认原文元数据表 `MC_MATERIAL` 位于 `ZYMEDCOLLECT_TAB` 表空间。原件表 `MC_ORIGINAL.ORIGINAL_PATH` 存相对路径，宿主机根目录为 `/zoesoft/med-collect/state/originals/`。每个原件的文件路径为 `<原件ID前两位>/<原件ID>/original.html` 或 `original.pdf`。迁移或备份时同时保存 Oracle、原件目录和本批审核交接目录。
+
+批次目录为 `/zoesoft/med-collect/operations/manuals-20261123/`。复制其中的 `review.html` 到内网审核终端即可打开独立清单，点击一行可进入需要登录的原件或知识详情页。采集时的外部网页和 PDF 快照位于批次 `files/`，系统日常提供下载的原件位于 `state/originals/`。
+
+在医学审批开始前，可在 3.27 执行以下只读复验。脚本提示输入现网采集账号和密码，检查 Oracle 应用返回的摘要和状态、官方文件指纹、服务器路径、业务项目和 PDF 预览。开始审批后，原报告用于对照当时状态，已批准或已同步的条目在工作台查看当前回执和版本。
+
+~~~bash
+cd /zoesoft/med-collect/operations/manuals-20261123
+python3 readback.py
+~~~
+
+逐份审核从采集端“审核与同步”进入。确认拟更新的业务 ID 和差异后再作医学审核决定。同步后通过知识详情的“业务回执”核对 4.23 记录、摘要和 PDF 附件。[批次交接](handoff.md#节点-17--中文说明书批量采集与待审交接)

@@ -63,6 +63,8 @@ class WorkflowIntegrationTest {
     private static final AtomicReference<Map<String, String>> SAVED_FORM = new AtomicReference<>();
     private static final Map<String,byte[]> REMOTE_FILES = new ConcurrentHashMap<>();
     private static final AtomicReference<String> MODEL_REQUEST = new AtomicReference<>();
+    private static final AtomicInteger EMPTY_ANALYSIS = new AtomicInteger();
+    private static final AtomicInteger SOURCE_ATTEMPTS = new AtomicInteger();
     private static final Map<String, String> AFFIXES = new ConcurrentHashMap<>();
     private static final Map<String, Map<String, String>> BUSINESS_RECORDS = new ConcurrentHashMap<>();
     private static final AtomicInteger UPDATES = new AtomicInteger();
@@ -78,6 +80,7 @@ class WorkflowIntegrationTest {
     @Autowired ObjectMapper json;
     @Autowired Store store;
     @Autowired CollectionService collection;
+    @Autowired SourceHttp sourceHttp;
 
     @DynamicPropertySource
     static void endpoints(DynamicPropertyRegistry environment) {
@@ -127,10 +130,11 @@ class WorkflowIntegrationTest {
                 .content("{\"typeCode\":\"31\",\"knowledgeClass\":\"17\",\"useAi\":true}")
                 .with(user("reviewer").roles("REVIEWER")).with(csrf())).andExpect(status().isConflict());
         postBody("/api/materials/" + material + "/decision", Map.of("revision", 1, "approved", true));
+        EMPTY_ANALYSIS.set(1);
         JsonNode draft = postBody("/api/materials/" + material + "/drafts",
                 Map.of("typeCode", "31", "knowledgeClass", "17", "useAi", true));
         String knowledge = draft.path("id").asText();
-        assertThat(MODEL_REQUEST.get()).contains("PDF raw test sentence");
+        assertThat(MODEL_REQUEST.get()).contains("PDF raw test sentence", "上一次未返回有效的摘要对象");
         assertThat(draft.path("summary").asText()).isEqualTo("Synthetic reviewed abstract");
         String endpoint = "/api/knowledge/" + knowledge;
         mvc.perform(post(endpoint + "/sync").contentType(MediaType.APPLICATION_JSON)
@@ -691,6 +695,42 @@ class WorkflowIntegrationTest {
         }
     }
 
+    @Test
+    void retriesShortLivedSourceOutages() throws Exception {
+        SOURCE_ATTEMPTS.set(0);
+        assertThat(sourceHttp.get(base() + "/source-transient").bytes()).isNotEmpty();
+        assertThat(SOURCE_ATTEMPTS.get()).isEqualTo(2);
+        assertThat(SourceHttp.retryDelay("120")).isEqualTo(120_000);
+        assertThat(SourceHttp.retryDelay("invalid")).isNegative();
+    }
+
+    @Test
+    void matchesLegacyManualByAliasWithinSubtypeAndPreservesQualifiers() throws Exception {
+        var uploaded = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file",
+                "lab-alias.txt", "text/plain", "项目说明及资料".getBytes(StandardCharsets.UTF_8)))
+                .param("sourceUrl", "https://example.org/manual-alias").param("title", "血清谷草转氨酶测定")
+                .with(user("collector").roles("ADMIN")).with(csrf())));
+        String material = uploaded.path("materialId").asText();
+        postBody("/api/materials/"+material+"/decision",Map.of("revision",1,"approved",true,"sourceAbstract","项目摘要"));
+        var draft = postBody("/api/materials/"+material+"/drafts",Map.of("typeCode","8-1","knowledgeClass","08","useAi",false));
+        String endpoint = "/api/knowledge/"+draft.path("id").asText();
+        for (String id : List.of("alias-legacy","alias-wrong-subtype","alias-plasma")) {
+            String name = (id.equals("alias-plasma") ? "血浆" : "血清")+"天冬氨酸氨基转移酶检测";
+            var original = businessRecord(id, name, "https://example.org/earlier-lab");
+            original.put("type","8");
+            original.put("childType",id.equals("alias-wrong-subtype") ? "8-2" : "8-1");
+            original.remove("knowledgeClass");
+            BUSINESS_RECORDS.put(id,original);
+            BUSINESS_AFFIXES.put(id,List.of());
+        }
+        postBody(endpoint+"/submit",Map.of("revision",draft.path("revision").asInt()));
+        var review = postBody(endpoint+"/sync-review",Map.of("revision",currentRevision(endpoint)));
+        assertThat(review.path("operation").asText()).isEqualTo("UPDATE");
+        assertThat(review.path("candidates")).hasSize(1);
+        assertThat(review.path("target").path("id").asText()).isEqualTo("alias-legacy");
+        assertThat(review.path("differences").findValuesAsText("field")).doesNotContain("标题");
+    }
+
     private static String base() { return "http://127.0.0.1:" + REMOTE.getAddress().getPort(); }
 
     private static HttpServer remote() {
@@ -701,6 +741,11 @@ class WorkflowIntegrationTest {
                     String path = exchange.getRequestURI().getPath();
                     byte[] request = exchange.getRequestBody().readAllBytes();
                     if (path.startsWith("/source")) {
+                        if (path.equals("/source-transient") && SOURCE_ATTEMPTS.incrementAndGet() == 1) {
+                            exchange.getResponseHeaders().set("Retry-After","0");
+                            exchange.sendResponseHeaders(503, -1);
+                            return;
+                        }
                         byte[] page = "<html><head><title>Fixture article</title></head><body><article>Fixture article text</article></body></html>"
                                 .getBytes(StandardCharsets.UTF_8);
                         exchange.getResponseHeaders().set("Content-Type", "text/html;charset=utf-8");
@@ -741,6 +786,7 @@ class WorkflowIntegrationTest {
                                 Map.of("itemClass","6","itemName","药品说明书"),Map.of("itemClass","17","itemName","临床指南")));
                         case "/api/knowledge/get-class-tree" -> ok(referenceFailure?List.of():List.of(
                                 Map.of("knowledgeClass","01","knowledgeClassName","疾病","upperClass","00"),
+                                Map.of("knowledgeClass","08","knowledgeClassName","检验检查","upperClass","00"),
                                 Map.of("knowledgeClass","17","knowledgeClassName","临床指南知识","upperClass","00"),
                                 Map.of("knowledgeClass","1701","knowledgeClassName","心血管内科","upperClass","17"),
                                 Map.of("knowledgeClass","170103","knowledgeClassName","高血压","upperClass","1701")));
@@ -751,6 +797,9 @@ class WorkflowIntegrationTest {
                                 Map.of("id","fixture-icd","name","Test condition","code","T01","source","国家临床版2.0","validFlag",1):Map.of());
                         case "/v1/chat/completions" -> {
                             MODEL_REQUEST.set(new String(request, StandardCharsets.UTF_8));
+                            if (EMPTY_ANALYSIS.compareAndSet(1,0)) {
+                                yield Map.of("choices",List.of(Map.of("finish_reason","stop","message",Map.of("content","{}"))));
+                            }
                             if (MODEL_REQUEST.get().contains("findings")) {
                                 yield Map.of("choices", List.of(Map.of("finish_reason", "stop", "message",
                                         Map.of("content", "{\"findings\":[\"核对原文所述研究对象和限定条件\"]}"))));
