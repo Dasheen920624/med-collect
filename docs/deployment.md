@@ -19,9 +19,11 @@
 
 服务器上的部署文档和交接记录为 `/zoesoft/med-collect/deployment.md` 与 `/zoesoft/med-collect/handoff.md`。
 
+现网应用镜像为 `med-collect:0.1.11-20261124-dfee740187db`，JAR 的 SHA-256 为 `dfee740187dbb9c8e14c66a6f6cf96365dba9adad7fc619bff6f5db8b6a18364`。0.1.11 更新工作台与登录页配色，使用与 0.1.10 相同的 Oracle 结构。若需恢复调色前的界面，可用已核对的 `med-collect:0.1.10-20261124-a09ba4fb2992` 镜像按本文回滚流程切换。[调色前的源码标签](https://github.com/Dasheen920624/med-collect/tree/v0.1.10)
+
 ## 说明书来源与资料移除
 
-现网使用 `med-collect:0.1.10-20261124-a09ba4fb2992`、Oracle 和原件卷。JAR 的 SHA-256 为 `a09ba4fb29925197a75bc5275695dec04cd691e7a098546f650a418a093875ac`。本版包含业务新增来源迁移 `009-sync-origin.xml`。说明书来源与原件移除沿用 `008-material-removal.sql`。
+业务新增来源迁移为 `009-sync-origin.xml`。说明书来源与原件移除沿用 `008-material-removal.sql`。
 
 1. `config/app.env` 中的 `MEDCOLLECT_MANUAL_SOURCE_HOSTS` 配置已核实的发布机构主机，以逗号分隔。现场值为 `jyk.eraweb.cn,www.adicon.com.cn,www.greatmaster.cn,www.gdghospital.org.cn,chinanm.cma.org.cn`。新增来源时先核对机构所在地、原始编写者、发布页和附件。将机构登记在批次清单中，并把实际使用的发布及附件主机加入配置后重建容器。应用按主机完整名称核验来源及重定向地址，在检验和检查说明书建稿、提交、查重、审批和发起同步时生效。
 2. 管理员在「文献原文库」打开原件详情，选择「移除这份资料」，填写原因并确认。已审批、发生过同步、已有业务版本或仍被其他待审稿引用的原件受保护。已移除的原件不可再次按相同指纹采入。删除时同步处理本地草稿、分类和任务结果关联，执行历史保留移除标志。
@@ -177,7 +179,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.10'
+$version = '0.1.11'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)
