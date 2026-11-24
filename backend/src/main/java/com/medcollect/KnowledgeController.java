@@ -67,7 +67,9 @@ class KnowledgeController {
                         original.formatCode(), original.fileName(), original.sourceUrl(), original.sourceName(),
                         original.capturedAt(), original.status()));
         result.put("events", store.events("KNOWLEDGE", id));
-        result.put("syncReview", reviews.preview(store.knowledge(id)));
+        var draft = store.knowledge(id);
+        result.put("syncReview", reviews.preview(draft));
+        result.put("canRevise", reviews.canRevise(draft));
         return result;
     }
 

@@ -26,18 +26,20 @@ class SyncService {
     private final CdssClient cdss;
     private final BusinessKnowledge business;
     private final SyncReviews reviews;
+    private final SyncOrigins origins;
     private final Executor workers;
     private final TransactionTemplate transactions;
 
     SyncService(Store store, KnowledgeWorkflow workflow, KnowledgeTemplates templates, CdssClient cdss,
                 BusinessKnowledge business, SyncReviews reviews,
-                @Qualifier("workExecutor") Executor workers, TransactionTemplate transactions) {
+                @Qualifier("workExecutor") Executor workers, TransactionTemplate transactions, SyncOrigins origins) {
         this.store = store;
         this.workflow = workflow;
         this.templates = templates;
         this.cdss = cdss;
         this.business = business;
         this.reviews = reviews;
+        this.origins = origins;
         this.workers = workers;
         this.transactions = transactions;
     }
@@ -46,9 +48,7 @@ class SyncService {
         if (!cdss.writeEnabled()) throw conflict("服务端尚未启用 4.23 同步");
         Knowledge current = store.knowledge(id);
         workflow.requireSource(store.material(current.materialId()),current.typeCode());
-        if (current.remoteId() == null && current.syncPhase() == null && reviews.approved(id).isEmpty()) {
-            throw conflict("同步前须检查 4.23 重复与差异，并完成当前稿件的人工审核");
-        }
+        requireWriteAuthority(current, reviews.approved(id).orElse(null));
         String token = id();
         transactions.executeWithoutResult(tx -> {
             if (!reviews.claimWriter(token, LEASE_MILLIS)) throw conflict("其他知识正在同步，请稍后重试");
@@ -77,15 +77,16 @@ class SyncService {
             Material material = store.material(knowledge.materialId());
             var schema = workflow.schema(knowledge);
             var approval = reviews.approved(id).orElse(null);
+            requireWriteAuthority(knowledge, approval);
             if (approval != null && approval.plan().target() != null) {
                 syncMatched(knowledge, material, schema, approval, token, actor);
                 return;
             }
             String remoteId = knowledge.remoteId();
-            if (remoteId == null) remoteId = saveRecord(knowledge, material, schema, approval != null, token, actor);
+            if (remoteId == null) remoteId = saveRecord(knowledge, material, schema, token, actor);
             if (material.pdf()) syncPdf(owned(id, token), material, remoteId, token, actor);
             ObjectNode actual = business.snapshot(remoteId, schema.category());
-            business.verifyCreated(knowledge, material, actual);
+            business.verifyCreated(knowledge, material, actual, true);
             complete(id, token, actor, remoteId, approval, actual, false);
         } catch (BusinessKnowledge.ReviewChanged e) {
             redoReview(id, token, actor, e.getMessage());
@@ -102,8 +103,30 @@ class SyncService {
         }
     }
 
+    private void requireWriteAuthority(Knowledge draft, SyncReviews.Approved approval) {
+        if (draft.status() == KnowledgeStatus.REFERENCE_ONLY) throw conflict(SyncOrigins.PROTECTED);
+        var plan = approval == null ? null : approval.plan();
+        if (plan != null && plan.target() != null) {
+            if (plan.operation() == BusinessKnowledge.Operation.SKIP && draft.syncPhase() == null && draft.remoteId() == null) return;
+            if (plan.operation() != BusinessKnowledge.Operation.UPDATE) throw conflict(SyncOrigins.PROTECTED);
+            origins.requireOwned(plan.target().id());
+            if (draft.remoteId() != null && !plan.target().id().equals(draft.remoteId())) throw conflict("同步目标与审核目标不符");
+            return;
+        }
+        if (plan != null && plan.operation() != BusinessKnowledge.Operation.CREATE) throw conflict("请重新核对同步目标");
+        if (draft.remoteId() != null) {
+            if (!origins.createdBy(draft.remoteId(), draft.id())) throw conflict(SyncOrigins.PROTECTED);
+            return;
+        }
+        // Pre-versioned installations also persisted POSTING before issuing their approved CREATE request.
+        if ("POSTING".equals(draft.syncPhase()) && store.db().sql("""
+                SELECT COUNT(*) FROM mc_event WHERE entity_type = 'KNOWLEDGE' AND entity_id = :id AND action = 'SYNC_POSTING'
+                """).param("id", draft.id()).query(Integer.class).single() > 0) return;
+        if (plan == null || draft.syncPhase() != null) throw conflict("同步前须检查 4.23 重复与差异，并完成当前稿件的人工审核");
+    }
+
     private String saveRecord(Knowledge knowledge, Material material, KnowledgeTemplates.Schema schema,
-                              boolean reviewed, String token, String actor) {
+                              String token, String actor) {
         var category = schema.category();
         String remoteId;
         if ("POSTING".equals(knowledge.syncPhase())) {
@@ -115,7 +138,7 @@ class SyncService {
         } else {
             templates.validateClass(category, knowledge.knowledgeClass(), true);
             workflow.validateBusinessValues(knowledge,true);
-            if (reviewed) business.verifyNoMatch(knowledge, material);
+            business.verifyNoMatch(knowledge, material);
             var form = business.createForm(knowledge, material, schema);
             cdss.prepareWrite();
             checkpoint(knowledge.id(), token, actor, "POSTING", null, null);
@@ -126,6 +149,7 @@ class SyncService {
                 throw e;
             }
         }
+        business.verifyCreated(knowledge, material, business.snapshot(remoteId, category), false);
         checkpoint(knowledge.id(), token, actor, "CREATED", remoteId, null);
         return remoteId;
     }
@@ -149,6 +173,7 @@ class SyncService {
             complete(id, token, actor, remoteId, approval, null, true);
             return;
         }
+        origins.requireOwned(remoteId);
         if (knowledge.syncPhase() == null || "UPDATE_POSTING".equals(knowledge.syncPhase())) {
             if (!business.matchesUpdate(plan, current, id, false)) {
                 if (!plan.baseline().equals(BusinessKnowledge.fingerprint(current))) {
@@ -192,6 +217,7 @@ class SyncService {
     }
 
     private void syncPdf(Knowledge knowledge, Material material, String remoteId, String token, String actor) {
+        origins.requireOwned(remoteId);
         if ("ATTACHED".equals(knowledge.syncPhase())) return;
         String attachment = knowledge.attachmentUrl();
         if (attachment == null) {
@@ -256,6 +282,7 @@ class SyncService {
                     .param("now", store.now()).param("id", id).param("token", token).update());
             store.event("KNOWLEDGE", id, phase == null ? "SYNC_REJECTED" : "SYNC_" + phase,
                     actor, attachment == null ? remote : attachment);
+            if ("CREATED".equals(phase)) origins.recordCreation(remote, id);
         });
     }
 

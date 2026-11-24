@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog https://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+  <changeSet id="009-sync-origin" author="medcollect">
+    <sql>
+      CREATE TABLE mc_sync_origin (
+        remote_id VARCHAR2(80) PRIMARY KEY,
+        knowledge_id VARCHAR2(36) NOT NULL UNIQUE REFERENCES mc_knowledge(id),
+        created_at NUMBER(19) NOT NULL
+      )
+    </sql>
+  </changeSet>
+  <changeSet id="009-proven-create-receipts" author="medcollect">
+    <sql><![CDATA[
+      INSERT INTO mc_sync_origin (remote_id, knowledge_id, created_at)
+      SELECT remote_id, MIN(knowledge_id), MIN(created_at)
+      FROM (
+        SELECT k.remote_id, k.id knowledge_id, e.occurred_at created_at
+        FROM mc_knowledge k JOIN mc_event e ON e.entity_type = 'KNOWLEDGE' AND e.entity_id = k.id
+        WHERE e.action = 'SYNC_CREATED' AND e.note = k.remote_id
+        UNION ALL
+        SELECT v.remote_id, v.knowledge_id, v.synced_at
+        FROM mc_sync_version v JOIN mc_knowledge k ON k.id = v.knowledge_id AND k.remote_id = v.remote_id
+        WHERE v.operation = 'CREATE' AND k.status = 'SYNCED'
+      ) receipts
+      GROUP BY remote_id HAVING COUNT(DISTINCT knowledge_id) = 1
+    ]]></sql>
+  </changeSet>
+  <changeSet id="009-protect-existing-reviews" author="medcollect">
+    <customChange class="com.medcollect.ProtectedReviewMigration"/>
+  </changeSet>
+</databaseChangeLog>

@@ -81,6 +81,9 @@ class WorkflowIntegrationTest {
     @Autowired Store store;
     @Autowired CollectionService collection;
     @Autowired SourceHttp sourceHttp;
+    @Autowired BusinessKnowledge business;
+    @Autowired KnowledgeWorkflow workflow;
+    @Autowired javax.sql.DataSource dataSource;
 
     @Test
     void removesLocalMaterialAndDraftAndPreventsRecapture() throws Exception {
@@ -203,6 +206,7 @@ class WorkflowIntegrationTest {
         String source = "https://doi.org/" + doi;
         String target = "existing-journal-target";
         String duplicate = "existing-journal-duplicate";
+        createThroughCollector(target, "31", "17");
         var original = businessRecord(target, "Original business title", source);
         BUSINESS_RECORDS.put(target, original);
         BUSINESS_RECORDS.put(duplicate, businessRecord(duplicate, "Another matching business title", source));
@@ -225,8 +229,12 @@ class WorkflowIntegrationTest {
         JsonNode choices = postBody(endpoint + "/sync-review", Map.of("revision", revision));
         assertThat(choices.path("operation").asText()).isEqualTo("CHOOSE");
         assertThat(choices.path("candidates").size()).isEqualTo(2);
+        var nativeMatch = postBody(endpoint + "/sync-review", Map.of("revision", currentRevision(endpoint), "targetId", duplicate));
+        assertThat(nativeMatch.path("operation").asText()).isEqualTo("REFERENCE_ONLY");
+        assertThat(nativeMatch.path("target").path("collectorCreated").asBoolean()).isFalse();
         JsonNode compared = postBody(endpoint + "/sync-review", Map.of("revision", currentRevision(endpoint), "targetId", target));
         assertThat(compared.path("operation").asText()).isEqualTo("UPDATE");
+        assertThat(compared.path("target").path("collectorCreated").asBoolean()).isTrue();
         assertThat(compared.path("mayResetBusinessReview").asBoolean()).isTrue();
         assertThat(compared.path("target").path("basis").asText()).isEqualTo("DOI 一致");
         assertThat(compared.path("differences").toString()).contains("Old reviewed abstract", "Updated reviewed abstract");
@@ -257,7 +265,8 @@ class WorkflowIntegrationTest {
         assertThat(BUSINESS_RECORDS.get(duplicate).get("name")).isEqualTo("Another matching business title");
 
         JsonNode versions = getBody(endpoint + "/sync-versions");
-        assertThat(versions.path("total").asLong()).isEqualTo(1);
+        assertThat(versions.path("total").asLong()).isEqualTo(2);
+        assertThat(versions.path("rows").get(1).path("operation").asText()).isEqualTo("CREATE");
         JsonNode version = versions.path("rows").get(0);
         assertThat(version.path("operation").asText()).isEqualTo("UPDATE");
         assertThat(version.path("reviewer").asText()).isEqualTo("reviewer");
@@ -275,13 +284,14 @@ class WorkflowIntegrationTest {
         JsonNode skipped = await(nextEndpoint, "knowledge", "SYNCED");
         assertThat(skipped.path("syncPhase").asText()).isEqualTo("SKIPPED");
         assertThat(UPDATES.get()).isEqualTo(updates + 1);
-        assertThat(getBody(nextEndpoint + "/sync-versions").path("total").asLong()).isEqualTo(1);
+        assertThat(getBody(nextEndpoint + "/sync-versions").path("total").asLong()).isEqualTo(2);
     }
 
     @Test
     void keepsEarlierPdfAndRestoresReferencesAfterAttachingNewOriginal() throws Exception {
         String source = "https://doi.org/10.1234/collection.pdf-version";
         String target = "existing-pdf-target";
+        createThroughCollector(target, "31", "17");
         var original = businessRecord(target, "PDF version target", source);
         var body = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(original.get("content"));
         body.withObjectProperty("content").put("references", "<p>Keep existing reference citation</p>");
@@ -357,6 +367,7 @@ class WorkflowIntegrationTest {
     @Test
     void updatesManuallyMatchedLabKnowledgeWithNativeSubtypeAndAllDictionaryLinks() throws Exception {
         String id = "lab-target-audit";
+        createThroughCollector(id, "8-1", "08");
         String doi = "https://doi.org/10.1234/outbound-lab-audit";
         var original = businessRecord(id,"Existing lab terminology","https://example.org/earlier-lab");
         original.put("type","8");
@@ -401,6 +412,113 @@ class WorkflowIntegrationTest {
 
     private int currentRevision(String endpoint) throws Exception {
         return getBody(endpoint).path("knowledge").path("revision").asInt();
+    }
+
+    @Test
+    void protectsNativePdfAcrossManualSelectionLegacyApprovalAndInterruptedUpload() throws Exception {
+        String target = "native-readonly-pdf";
+        var original = businessRecord(target, "Native journal for comparison", "https://example.org/native-pdf");
+        BUSINESS_RECORDS.put(target, original);
+        var m = body(mvc.perform(multipart("/api/materials/upload")
+                .file(new MockMultipartFile("file", "protected.pdf", "application/pdf", pdf()))
+                .param("title", "Manually matched publication").param("sourceUrl", "https://example.org/protected-pdf")
+                .with(user("collector").roles("ADMIN")).with(csrf())));
+        String material = "/api/materials/" + m.path("materialId").asText();
+        postBody(material + "/decision", Map.of("revision", 1, "approved", true, "sourceAbstract", "New PDF abstract"));
+        var draft = postBody(material + "/drafts", Map.of("typeCode", "31", "knowledgeClass", "17", "useAi", false));
+        String id = draft.path("id").asText(), endpoint = "/api/knowledge/" + id;
+        original.put("remark", BusinessKnowledge.marker(id));
+        var pending = postBody(endpoint + "/submit", Map.of("revision", draft.path("revision").asInt()));
+        var review = postBody(endpoint + "/sync-review", Map.of("revision", pending.path("revision").asInt(), "manual", true, "targetId", target));
+        assertThat(review.path("operation").asText()).isEqualTo("REFERENCE_ONLY");
+        assertThat(review.path("differences").toString()).contains("PDF 原件", "New PDF abstract");
+        review = postBody(endpoint + "/sync-review", Map.of("revision", currentRevision(endpoint)));
+        assertThat(review.path("target").path("id").asText()).isEqualTo(target);
+        int rev = currentRevision(endpoint);
+        var decision = Map.of("revision", rev, "approved", true, "reviewId", review.path("id").asText());
+        var sync = Map.of("revision", rev);
+        int updates = UPDATES.get(), uploads = FILE_WRITES.size();
+        expectConflict(endpoint + "/decision", decision);
+        expectConflict(endpoint + "/sync", sync);
+        // Simulate an outstanding plan issued by the previous application version.
+        String serialized = store.db().sql("SELECT plan_json FROM mc_sync_review WHERE knowledge_id=:id").param("id", id).query(String.class).single();
+        var old = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(serialized);
+        old.put("operation", "UPDATE").put("uploadPdf", true);
+        store.db().sql("UPDATE mc_sync_review SET plan_json=:plan WHERE knowledge_id=:id")
+                .param("plan", old.toString(), java.sql.Types.CLOB).param("id", id).update();
+        store.db().sql("UPDATE mc_knowledge SET status='PENDING' WHERE id=:id").param("id", id).update();
+        expectConflict(endpoint + "/decision", decision);
+        store.db().sql("UPDATE mc_knowledge SET status='APPROVED' WHERE id=:id").param("id", id).update();
+        store.db().sql("UPDATE mc_sync_review SET reviewer='legacy',approved_at=1 WHERE knowledge_id=:id").param("id", id).update();
+        expectConflict(endpoint + "/sync", sync);
+        store.db().sql("UPDATE mc_knowledge SET status='SYNC_FAILED',remote_id=:target,sync_phase='UPLOADED' WHERE id=:id")
+                .param("target", target).param("id", id).update();
+        expectConflict(endpoint + "/sync", sync);
+        try (var conn = dataSource.getConnection()) {
+            var db = new liquibase.database.core.H2Database();
+            db.setConnection(new liquibase.database.jvm.JdbcConnection(conn));
+            new ProtectedReviewMigration().execute(db);
+            db.commit();
+        }
+        var protectedDraft = getBody(endpoint);
+        assertThat(protectedDraft.path("knowledge").path("status").asText()).isEqualTo("REFERENCE_ONLY");
+        assertThat(protectedDraft.path("knowledge").path("syncPhase").asText()).isEqualTo("UPLOADED");
+        assertThat(protectedDraft.path("syncReview").path("approved").asBoolean()).isFalse();
+        assertThat(protectedDraft.path("syncReview").path("differences")).isEqualTo(review.path("differences"));
+        assertThat(getBody(endpoint + "/sync-versions").path("total").asInt()).isZero();
+        assertThat(UPDATES.get()).isEqualTo(updates);
+        assertThat(FILE_WRITES).hasSize(uploads);
+        assertThat(BUSINESS_AFFIXES.getOrDefault(target, List.of())).isEmpty();
+        assertThat(original.get("content")).contains("Old reviewed abstract");
+    }
+
+    @Test
+    void identicalNativeKnowledgeCanBeSkippedButCannotStartARevision() throws Exception {
+        String target = "native-identical";
+        var m = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file", "match.txt",
+                        "text/plain", "Exact comparison".getBytes(StandardCharsets.UTF_8))).param("title", "Identical native journal")
+                .param("sourceUrl", "https://example.org/native-identical").with(user("collector").roles("ADMIN")).with(csrf())));
+        String material = "/api/materials/" + m.path("materialId").asText();
+        postBody(material + "/decision", Map.of("revision", 1, "approved", true, "sourceAbstract", "Matched abstract"));
+        var draft = postBody(material + "/drafts", Map.of("typeCode","31","knowledgeClass","17","useAi",false));
+        var k = store.knowledge(draft.path("id").asText());
+        var nativeRow = new ConcurrentHashMap<>(business.createForm(k, store.material(k.materialId()), workflow.schema(k)));
+        nativeRow.put("id", target);
+        nativeRow.put("remark", "Native knowledge");
+        BUSINESS_RECORDS.put(target, nativeRow);
+        String endpoint = "/api/knowledge/" + k.id();
+        var pending = postBody(endpoint + "/submit", Map.of("revision", k.revision()));
+        var approved = compareAndApprove(endpoint, pending.path("revision").asInt(), "SKIP");
+        int updates = UPDATES.get();
+        postBody(endpoint + "/sync", Map.of("revision", approved.path("revision").asInt()));
+        var synced = await(endpoint, "knowledge", "SYNCED");
+        assertThat(synced.path("syncPhase").asText()).isEqualTo("SKIPPED");
+        assertThat(getBody(endpoint).path("canRevise").asBoolean()).isFalse();
+        expectConflict(endpoint + "/revisions", Map.of("revision", synced.path("revision").asInt()));
+        assertThat(UPDATES.get()).isEqualTo(updates);
+        assertThat(getBody(endpoint + "/sync-versions").path("total").asInt()).isZero();
+    }
+
+    private void expectConflict(String endpoint, Object payload) throws Exception {
+        mvc.perform(post(endpoint).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsBytes(payload))
+                .with(user("reviewer").roles("REVIEWER")).with(csrf())).andExpect(status().isConflict());
+    }
+
+    private String createThroughCollector(String remoteId, String type, String knowledgeClass) throws Exception {
+        String title = "collector-seed-" + remoteId;
+        var m = body(mvc.perform(multipart("/api/materials/upload").file(new MockMultipartFile("file", "origin.txt",
+                        "text/plain", title.getBytes(StandardCharsets.UTF_8))).param("sourceUrl", "https://example.org/seed/" + remoteId)
+                .param("title", title).with(user("collector").roles("ADMIN")).with(csrf())));
+        String material = "/api/materials/" + m.path("materialId").asText();
+        postBody(material + "/decision", Map.of("revision", 1, "approved", true, "sourceAbstract", "Initial abstract"));
+        var draft = postBody(material + "/drafts", Map.of("typeCode", type, "knowledgeClass", knowledgeClass, "useAi", false));
+        String endpoint = "/api/knowledge/" + draft.path("id").asText();
+        var pending = postBody(endpoint + "/submit", Map.of("revision", draft.path("revision").asInt()));
+        var approved = compareAndApprove(endpoint, pending.path("revision").asInt(), "CREATE");
+        postBody(endpoint + "/sync", Map.of("revision", approved.path("revision").asInt()));
+        assertThat(await(endpoint, "knowledge", "SYNCED").path("remoteId").asText()).isEqualTo(remoteId);
+        assertThat(getBody(endpoint).path("canRevise").asBoolean()).isTrue();
+        return draft.path("id").asText();
     }
 
     private JsonNode approve(String endpoint, JsonNode review) throws Exception {
@@ -746,10 +864,13 @@ class WorkflowIntegrationTest {
         }
         postBody(endpoint+"/submit",Map.of("revision",draft.path("revision").asInt()));
         var review = postBody(endpoint+"/sync-review",Map.of("revision",currentRevision(endpoint)));
-        assertThat(review.path("operation").asText()).isEqualTo("UPDATE");
+        assertThat(review.path("operation").asText()).isEqualTo("REFERENCE_ONLY");
         assertThat(review.path("candidates")).hasSize(1);
         assertThat(review.path("target").path("id").asText()).isEqualTo("alias-legacy");
         assertThat(review.path("differences").findValuesAsText("field")).doesNotContain("标题");
+        assertThat(getBody(endpoint).path("knowledge").path("status").asText()).isEqualTo("REFERENCE_ONLY");
+        assertThat(getBody("/api/knowledge?human=PENDING&query=血清谷草转氨酶").path("total").asInt()).isZero();
+        assertThat(getBody("/api/knowledge?sync=REFERENCE_ONLY&query=血清谷草转氨酶").path("total").asInt()).isOne();
     }
 
     private static String base() { return "http://127.0.0.1:" + REMOTE.getAddress().getPort(); }
@@ -846,6 +967,13 @@ class WorkflowIntegrationTest {
                                     yield Map.of("message", "Response interrupted after update");
                                 }
                                 yield ok(target);
+                            }
+                            if (fields.get("name").startsWith("collector-seed-")) {
+                                String createdId = fields.get("name").substring("collector-seed-".length());
+                                var created = new ConcurrentHashMap<>(fields);
+                                created.put("id", createdId);
+                                BUSINESS_RECORDS.put(createdId, created);
+                                yield ok(created);
                             }
                             CREATES.incrementAndGet();
                             SAVED_FORM.set(fields);

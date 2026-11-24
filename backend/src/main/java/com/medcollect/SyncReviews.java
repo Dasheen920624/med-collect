@@ -35,15 +35,17 @@ class SyncReviews {
     private final Store store;
     private final CdssClient cdss;
     private final BusinessKnowledge business;
+    private final SyncOrigins origins;
     private final KnowledgeWorkflow workflow;
     private final ObjectMapper json;
     private final TransactionTemplate transactions;
 
     SyncReviews(Store store, CdssClient cdss, BusinessKnowledge business, KnowledgeWorkflow workflow, ObjectMapper json,
-                TransactionTemplate transactions) {
+                TransactionTemplate transactions, SyncOrigins origins) {
         this.store = store;
         this.cdss = cdss;
         this.business = business;
+        this.origins = origins;
         this.workflow = workflow;
         this.json = json;
         this.transactions = transactions;
@@ -62,6 +64,11 @@ class SyncReviews {
         BusinessKnowledge.Plan plan;
         try {
             var material = store.material(draft.materialId());
+            if (draft.status() == KnowledgeStatus.REFERENCE_ONLY && trim(targetId).isBlank()) {
+                var previous = review(id).map(row -> readPlan(row.planJson())).orElseThrow(() -> conflict("请重新选择业务对照记录"));
+                targetId = previous.target().id();
+                manual = "人工指定同类业务知识".equals(previous.target().basis());
+            }
             plan = manual ? business.manualPlan(draft,material,targetId) : business.plan(draft,material,targetId);
         } catch (CdssClient.RemoteFailure e) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, e.getMessage(), e);
@@ -72,9 +79,10 @@ class SyncReviews {
             requireReviewable(current, revision);
             int nextRevision = revision + 1;
             changed(store.db().sql("""
-                    UPDATE mc_knowledge SET status = 'PENDING', revision = :next, sync_error = NULL, updated_at = :now
+                    UPDATE mc_knowledge SET status = :status, revision = :next, sync_error = NULL, updated_at = :now
                     WHERE id = :id AND revision = :revision
-                    """).param("id", id).param("next", nextRevision).param("revision", revision).param("now", store.now()).update());
+                    """).param("id", id).param("status", plan.operation() == REFERENCE_ONLY ? "REFERENCE_ONLY" : "PENDING")
+                    .param("next", nextRevision).param("revision", revision).param("now", store.now()).update());
             store.db().sql("DELETE FROM mc_sync_review WHERE knowledge_id = :id").param("id", id).update();
             String review = id();
             store.db().sql("""
@@ -82,18 +90,23 @@ class SyncReviews {
                     VALUES (:id, :review, :revision, :plan)
                     """).param("id", id).param("review", review).param("revision", nextRevision)
                     .param("plan", write(plan), Types.CLOB).update();
-            store.event("KNOWLEDGE", id, "SYNC_REVIEWED", actor, plan.target() == null ? plan.operation().name() : plan.target().basis()+" · "+plan.target().id());
-            return view(review, false, plan);
+            store.event("KNOWLEDGE", id, plan.operation() == REFERENCE_ONLY ? "SYNC_PROTECTED" : "SYNC_REVIEWED",
+                    actor, plan.target() == null ? plan.operation().name() : plan.target().basis()+" · "+plan.target().id());
+            return view(review, false, plan, false);
         });
     }
 
     @Transactional
     KnowledgeWorkflow.Detail decision(String id, Decision input, String actor) {
         lockDraft(id);
+        if (store.knowledge(id).status() == KnowledgeStatus.REFERENCE_ONLY) throw conflict(SyncOrigins.PROTECTED);
         if (input.approved() && cdss.configured()) {
             Row review = review(id).orElseThrow(() -> conflict("请先检查 4.23 重复与差异"));
+            var plan = readPlan(review.planJson());
+            if (plan.operation() == REFERENCE_ONLY) throw conflict(SyncOrigins.PROTECTED);
+            if (plan.operation() == UPDATE) origins.requireOwned(plan.target().id());
             if (!review.reviewId().equals(input.reviewId()) || review.draftRevision() != input.revision()
-                    || review.approvedAt() != null || readPlan(review.planJson()).operation() == CHOOSE) {
+                    || review.approvedAt() != null || plan.operation() == CHOOSE) {
                 throw conflict("请核对当前查重结果并明确选择业务记录后再审批");
             }
             changed(store.db().sql("""
@@ -106,15 +119,20 @@ class SyncReviews {
 
     Preview preview(Knowledge draft) {
         return review(draft.id()).filter(row -> switch (draft.status()) {
-            case PENDING -> row.draftRevision() == draft.revision();
+            case PENDING, REFERENCE_ONLY -> row.draftRevision() == draft.revision();
             case APPROVED, SYNCING, SYNC_FAILED, SYNCED -> row.approvedAt() != null;
             default -> false;
-        }).map(row -> view(row.reviewId(), row.approvedAt() != null, readPlan(row.planJson()))).orElse(null);
+        }).map(row -> view(row.reviewId(), row.approvedAt() != null, readPlan(row.planJson()),
+                draft.status() == KnowledgeStatus.SYNCED)).orElse(null);
     }
 
     Optional<Approved> approved(String draftId) {
         return review(draftId).filter(row -> row.approvedAt() != null)
                 .map(row -> new Approved(row.reviewId(), row.reviewer(), row.approvedAt(), readPlan(row.planJson())));
+    }
+
+    boolean canRevise(Knowledge draft) {
+        return draft.status() == KnowledgeStatus.SYNCED && origins.owns(draft.remoteId());
     }
 
     @Transactional
@@ -124,6 +142,7 @@ class SyncReviews {
         if (original.status() != KnowledgeStatus.SYNCED || original.remoteId() == null || original.revision() != revision) {
             throw conflict("仅当前已同步且有业务主键的知识可发起新版本");
         }
+        origins.requireOwned(original.remoteId());
         String latest = store.db().sql("""
                 SELECT id FROM mc_knowledge WHERE remote_id = :target AND status = 'SYNCED'
                 ORDER BY updated_at DESC, id DESC FETCH FIRST 1 ROWS ONLY
@@ -207,7 +226,8 @@ class SyncReviews {
     private void requireReviewable(Knowledge draft, int revision) {
         workflow.requireSource(store.material(draft.materialId()),draft.typeCode());
         if (draft.revision() != revision || draft.remoteId() != null || draft.syncPhase() != null
-                || !List.of(KnowledgeStatus.PENDING, KnowledgeStatus.APPROVED, KnowledgeStatus.SYNC_FAILED).contains(draft.status())) {
+                || !List.of(KnowledgeStatus.PENDING, KnowledgeStatus.APPROVED, KnowledgeStatus.SYNC_FAILED,
+                            KnowledgeStatus.REFERENCE_ONLY).contains(draft.status())) {
             throw conflict("当前稿件状态或修订号已变化，请刷新后重试");
         }
     }
@@ -229,10 +249,19 @@ class SyncReviews {
                 .param("id", id).query(Row.class).optional();
     }
 
-    private Preview view(String id, boolean approved, BusinessKnowledge.Plan plan) {
-        boolean mayReset = plan.operation() == UPDATE && (plan.before().path("isStart").asInt() != 0
+    private BusinessKnowledge.Candidate withCurrentOrigin(BusinessKnowledge.Candidate c) {
+        return new BusinessKnowledge.Candidate(c.id(), c.title(), c.knowledgeClass(), c.doi(), c.basis(), c.url(), origins.owns(c.id()));
+    }
+
+    private Preview view(String id, boolean approved, BusinessKnowledge.Plan plan, boolean completed) {
+        var candidates = plan.candidates().stream().map(this::withCurrentOrigin).toList();
+        var target = plan.target() == null ? null : candidates.stream().filter(c -> c.id().equals(plan.target().id()))
+                .findFirst().orElseGet(() -> withCurrentOrigin(plan.target()));
+        var operation = plan.operation();
+        if (!completed && operation == UPDATE && (target == null || !target.collectorCreated())) operation = REFERENCE_ONLY;
+        boolean mayReset = operation == UPDATE && (plan.before().path("isStart").asInt() != 0
                 || plan.before().path("auditStatus").asInt() != 0 || plan.before().path("releaseStatus").asInt() != 0);
-        return new Preview(id, approved, plan.operation(), plan.doi(), mayReset, plan.target(), plan.candidates(), plan.differences());
+        return new Preview(id, approved && operation != REFERENCE_ONLY, operation, plan.doi(), mayReset, target, candidates, plan.differences());
     }
 
     private BusinessKnowledge.Plan readPlan(String raw) {

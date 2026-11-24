@@ -51,8 +51,8 @@ watch(() => [content.value?.knowledge?.typeCode,content.value?.knowledge?.knowle
     if (active) classLabel.value = options.find(c => c.code === code)?.name || ''
   } catch { /* The stored business code remains visible when the directory is unavailable. */ }
 })
-const humanLabels = { DRAFT:'草稿', PENDING:'待审核', APPROVED:'已通过', RETURNED:'已退回' }
-const syncLabels = { READY:'审核通过待同步', UNSYNCED:'未同步', SYNCING:'同步中', SYNCED:'已写入 4.23', SKIPPED:'相同已跳过', SYNC_FAILED:'同步异常' }
+const humanLabels = { DRAFT:'草稿', PENDING:'待审核', APPROVED:'已通过', RETURNED:'已退回', REFERENCE_ONLY:'仅供对照' }
+const syncLabels = { READY:'审核通过待同步', UNSYNCED:'未同步', SYNCING:'同步中', SYNCED:'已写入 4.23', SKIPPED:'相同已跳过', SYNC_FAILED:'同步异常', REFERENCE_ONLY:'业务原有 · 仅对照' }
 const outcomeLabels = { ...syncLabels, CREATE:'已新增', UPDATE:'已更新' }
 const humanState = row => row.status in humanLabels ? row.status : 'APPROVED'
 const syncState = row => row.syncPhase === 'SKIPPED' ? 'SKIPPED' : row.deliveredOperation || (row.status === 'APPROVED' ? 'READY' : row.status in syncLabels ? row.status : 'UNSYNCED')
@@ -92,15 +92,16 @@ const canSync = computed(() => ['APPROVED', 'SYNC_FAILED'].includes(draft.value?
 const canReopen = computed(() => canSync.value && draft.value?.status !== 'SYNCING'
   && !draft.value?.remoteId && !draft.value?.syncPhase)
 const canCompare = computed(() => props.session.cdssConfigured && !draft.value?.remoteId && !draft.value?.syncPhase
-  && ['PENDING', 'APPROVED', 'SYNC_FAILED'].includes(draft.value?.status))
+  && ['PENDING', 'APPROVED', 'SYNC_FAILED', 'REFERENCE_ONLY'].includes(draft.value?.status))
 const needsReview = computed(() => !review.value?.approved && !draft.value?.remoteId && !draft.value?.syncPhase)
-const approveReady = computed(() => !props.session.cdssConfigured || (review.value && review.value.operation !== 'CHOOSE'))
+const approveReady = computed(() => !props.session.cdssConfigured || ['CREATE','UPDATE','SKIP'].includes(review.value?.operation))
 const hasVersionTarget = computed(() => draft.value?.remoteId || draft.value?.updateTargetId || review.value?.target)
 const reviewMessages = {
   CREATE: '未找到匹配知识。审核通过后可新增到 4.23。',
-  UPDATE: '审核通过后可按原业务主键更新并保存版本记录。',
+  UPDATE: '这条知识由采集系统新增。人工审核通过后，沿用原业务 ID 更新并保存版本记录。',
   SKIP: '匹配内容一致。审核通过后可登记跳过。',
-  CHOOSE: '找到多个匹配记录。请选择拟更新的业务记录后核对差异。',
+  CHOOSE: '找到多个匹配记录。请选择对应的业务知识，核对来源和差异。',
+  REFERENCE_ONLY: '这条 4.23 知识缺少采集系统的新增回执。可查看业务原文与差异，稿件已归入「业务原有 · 仅对照」。',
 }
 
 async function load(page = 1) {
@@ -267,8 +268,8 @@ async function applyDetail(value) {
   if (value === 'pending' || value === 'drafts') {
     filters.value.human = value === 'pending' ? 'PENDING' : 'EDITABLE'
     await load()
-  } else if (['synced','ready','failed','skipped'].includes(value)) {
-    filters.value.sync = { synced:'SYNCED', ready:'READY', failed:'SYNC_FAILED', skipped:'SKIPPED' }[value]
+  } else if (['synced','ready','failed','skipped','reference'].includes(value)) {
+    filters.value.sync = { synced:'SYNCED', ready:'READY', failed:'SYNC_FAILED', skipped:'SKIPPED', reference:'REFERENCE_ONLY' }[value]
     await load()
   } else if (value?.startsWith('material:')) {
     filters.value.materialId = value.slice(9)
@@ -414,11 +415,11 @@ watch(() => props.detail, applyDetail)
         <ul v-if="review.operation === 'CHOOSE'" class="simple-list">
           <li v-for="candidate in review.candidates" :key="candidate.id">
             <span><a :href="candidate.url" target="_blank" rel="noopener noreferrer">{{ candidate.title }}</a>
-              <small class="subline">{{ candidate.basis }} · {{ candidate.knowledgeClass || '未分子类' }} · {{ candidate.id }}</small></span>
+              <small class="subline">{{ candidate.collectorCreated ? '采集系统新增' : '业务原有 · 仅对照' }} · {{ candidate.basis }} · {{ candidate.knowledgeClass || '未分子类' }} · {{ candidate.id }}</small></span>
             <button class="button secondary" :disabled="busy || !canCompare" @click="compare(candidate.id)">选择并对比</button>
           </li>
         </ul>
-        <p v-if="review.target" class="muted">{{ review.target.basis }} ·
+        <p v-if="review.target" class="muted">{{ review.target.collectorCreated ? '采集系统新增' : '业务原有' }} · {{ review.target.basis }} ·
           <a :href="review.target.url" target="_blank" rel="noopener noreferrer">{{ review.target.title }}</a>
           · {{ review.target.id }}
         </p>
@@ -430,7 +431,7 @@ watch(() => props.detail, applyDetail)
         <h3>版本记录</h3>
         <div class="actions">
           <button class="button secondary" :disabled="busy" @click="loadVersions()">查看版本记录</button>
-          <button v-if="draft.status === 'SYNCED'" class="button secondary" :disabled="busy" @click="revise">发起新版本</button>
+          <button v-if="content.canRevise" class="button secondary" :disabled="busy" @click="revise">发起新版本</button>
         </div>
       </div>
       <template v-if="versions">

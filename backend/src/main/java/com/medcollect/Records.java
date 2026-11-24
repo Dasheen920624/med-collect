@@ -20,7 +20,7 @@ final class Records {
     enum ScheduleMode { MANUAL, INTERVAL, ONCE, DAILY }
     enum AccessState { PUBLIC, PENDING, AUTHORIZED }
     enum MaterialStatus { PENDING, APPROVED, RETURNED }
-    enum KnowledgeStatus { DRAFT, PENDING, APPROVED, RETURNED, SYNCING, SYNC_FAILED, SYNCED }
+    enum KnowledgeStatus { DRAFT, PENDING, APPROVED, RETURNED, SYNCING, SYNC_FAILED, SYNCED, REFERENCE_ONLY }
     enum RunStatus { RUNNING, SUCCEEDED, PARTIAL, FAILED }
 
     record Page<T>(List<T> rows, long total, int page, int size) {}

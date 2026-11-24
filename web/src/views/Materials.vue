@@ -384,7 +384,7 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
         <button class="link" @click="emit('navigate', 'knowledge', 'material:' + item.material.id)">查看此原文的知识</button>
       </div>
     </section>
-    <section v-if="session.admin && item.knowledge.rows.every(k => ['PENDING','DRAFT','RETURNED'].includes(k.status))" class="form-section">
+    <section v-if="session.admin && item.knowledge.rows.every(k => ['PENDING','DRAFT','RETURNED','REFERENCE_ONLY'].includes(k.status))" class="form-section">
       <button v-if="!confirmingRemoval" class="link" @click="confirmingRemoval = true">移除这份资料</button>
       <template v-else>
         <p>将永久移除本地原件和关联的未审批稿件。</p>

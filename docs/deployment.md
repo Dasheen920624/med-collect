@@ -21,7 +21,7 @@
 
 ## 说明书来源与资料移除
 
-现网使用 `med-collect:0.1.9-20261124-083bc2b7ed9a`、Oracle 和原件卷。JAR 的 SHA-256 为 `083bc2b7ed9a2b542caba7c4270a783c5383a4b6d746ad315e50f2970cff1ff4`。升级包含增量迁移 `008-material-removal.sql`。17 项回归测试通过，覆盖移除后按相同指纹重新上传。已在现网核对删除、来源限制和新采集批次。
+现网使用 `med-collect:0.1.10-20261124-a09ba4fb2992`、Oracle 和原件卷。JAR 的 SHA-256 为 `a09ba4fb29925197a75bc5275695dec04cd691e7a098546f650a418a093875ac`。本版包含业务新增来源迁移 `009-sync-origin.xml`。说明书来源与原件移除沿用 `008-material-removal.sql`。
 
 1. `config/app.env` 中的 `MEDCOLLECT_MANUAL_SOURCE_HOSTS` 配置已核实的发布机构主机，以逗号分隔。现场值为 `jyk.eraweb.cn,www.adicon.com.cn,www.greatmaster.cn,www.gdghospital.org.cn,chinanm.cma.org.cn`。新增来源时先核对机构所在地、原始编写者、发布页和附件。将机构登记在批次清单中，并把实际使用的发布及附件主机加入配置后重建容器。应用按主机完整名称核验来源及重定向地址，在检验和检查说明书建稿、提交、查重、审批和发起同步时生效。
 2. 管理员在「文献原文库」打开原件详情，选择「移除这份资料」，填写原因并确认。已审批、发生过同步、已有业务版本或仍被其他待审稿引用的原件受保护。已移除的原件不可再次按相同指纹采入。删除时同步处理本地草稿、分类和任务结果关联，执行历史保留移除标志。
@@ -91,11 +91,21 @@ docker compose --env-file release.env up -d --force-recreate --wait --wait-timeo
 | --- | --- |
 | 无匹配 | 同步前再次查重，仍无匹配时新增业务记录 |
 | 内容一致 | 登记跳过，关联原业务主键 |
-| 内容有变化 | 展示标题、摘要、模板字段、业务关联和 PDF 附件差异。同步前复核业务记录，传入原 ID 更新 |
+| 内容有变化，原 ID 有采集系统新增回执 | 展示字段、字典和 PDF 差异，人工审批后复核业务记录，沿用原 ID 更新并登记版本 |
+| 内容有变化，原 ID 无采集系统新增回执 | 归入「业务原有 · 仅对照」，保留原件、业务链接和差异供查阅 |
 
 4.23 的查询接口返回正文，DOI 可能出现在来源网址、模板字段或备注。接口未提供独立 DOI 过滤。采集系统分页核对同类候选，每次最多 30 页，每页 50 项。若范围超限，页面会提示缩小子类。相同字节的 PDF 沿用已有附件。更新后的 PDF 作为新附件绑定，已存在的文件及参考文献条目保留。
 
-已同步稿件可通过「发起新版本」编辑和重新提交审核。「版本记录」按业务主键显示采集系统记录的版本号、审核人、同步时间、前后快照和差异。Oracle 迁移 `006-knowledge-sync.sql` 新增审核快照、版本记录和同步租约。4.23 的发布日志属于独立接口，采集版本号存于 `MC_SYNC_VERSION`，每个业务主键独立编号。
+由采集系统首建的业务知识可通过「发起新版本」编辑和重新提交审核。「版本记录」按业务主键显示采集系统记录的版本号、审核人、同步时间、前后快照和差异。Oracle 迁移 `006-knowledge-sync.sql` 新增审核快照、版本记录和同步租约。采集版本号存于 `MC_SYNC_VERSION`，每个业务主键独立编号。
+
+0.1.10 使用 `MC_SYNC_ORIGIN` 登记业务 ID、首建稿件 ID 和时间。新建请求回读核对后，来源登记和取得业务主键在同一事务提交。历史回填只接受与稿件业务 ID 一致的 `SYNC_CREATED` 事件或成功的 `CREATE` 版本。导入的业务资料、手选目标、DOI、标题和字典用于查重。匹配或登记跳过均不产生新增回执。审批、同步、附件续传和发起新版本均执行来源校验。
+
+升级时停用旧应用实例，待进行中的同步结束后运行 Liquibase。迁移会撤回来源未经证实的待执行更新，保留旧差异和已发生的同步步骤，标记为 `REFERENCE_ONLY`，并清除该计划原有的审批凭据。已经完成的同步保留原有历史。可用以下查询核对回填来源与队列。
+
+~~~sql
+SELECT remote_id, knowledge_id, created_at FROM mc_sync_origin ORDER BY created_at;
+SELECT status, COUNT(*) FROM mc_knowledge GROUP BY status ORDER BY status;
+~~~
 
 4.23 保存时可能按业务权限重置审核或发布状态，并停用已发布的知识。审核页提示这一影响，版本快照保存 4.23 回读到的实际状态，后续启用和发布按 4.23 业务流程处理。
 
@@ -167,7 +177,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.9'
+$version = '0.1.10'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)
@@ -189,7 +199,7 @@ JAR 应包含 `BOOT-INF/classes/static/index.html` 和 Vue assets。应用镜像
 
 ### 2. 构建容器镜像并切换
 
-在服务器 root 终端填入上一步输出的发行标识再执行。每个新版本使用独立镜像标签。启动失败时此命令通过当前 `release.env` 拉起上一版本。切换成功后按「状态检查与配置」验收。
+在服务器 root 终端填入上一步输出的发行标识再执行。每个新版本使用独立镜像标签。切换成功后按「状态检查与配置」验收。启动失败保留日志和旧发行指针，按迁移兼容性选择恢复镜像。
 
 ~~~bash
 (
@@ -232,7 +242,6 @@ JAR 应包含 `BOOT-INF/classes/static/index.html` 和 Vue assets。应用镜像
         mv -T "$next_env" release.env
     else
         docker compose --env-file "$next_env" logs --tail 80 app || true
-        docker compose --env-file release.env up -d --wait --wait-timeout 60 app
         exit 1
     fi
 )
@@ -271,6 +280,8 @@ Liquibase 的 `007-business-catalog.xml` 包含分类来源列、唯一索引和
 
 ## 回滚
 
+`009` 已执行的数据库包含 `REFERENCE_ONLY` 及新增来源登记。使用支持该状态和来源保护的镜像前滚修复。0.1.9 及更早版本会把业务原有记录列为更新目标，且无法读取新状态。需要整体恢复旧数据库时，配套恢复对应时间点的原件，先关闭旧版对 4.23 的写入，恢复来源保护并验收后再开放写入。以下镜像切换命令仅用于已核对兼容性的版本组合。
+
 `previous.env` 保存上一个镜像和发布地址。回滚到 0.1.3 前，待进行中的同步结束，在 `config/app.env` 设 `MEDCOLLECT_CDSS_SYNC_ENABLED=false`，避免旧版将新版修订稿按新增处理。保留 `006` 迁移的数据。重新部署支持版本更新的版本并核对未完成同步后，再启用业务写入。采集计划和原件读取可在回滚期间使用。核对兼容性后可在服务器执行以下命令，再做状态和功能验收。
 
 ~~~bash
@@ -287,17 +298,18 @@ Liquibase 的 `007-business-catalog.xml` 包含分类来源列、唯一索引和
 
 应用回滚复用现有 Oracle 数据。涉及数据库兼容性的版本按对应迁移方案处理。
 
-## 中文说明书批次数据
+## 中国大陆说明书批次复验
 
-2026-11-23 的说明书通过运行中的 0.1.7 工作台入库。Oracle 用户为 `ZYMEDCOLLECT`，经只读查询确认原文元数据表 `MC_MATERIAL` 位于 `ZYMEDCOLLECT_TAB` 表空间。原件表 `MC_ORIGINAL.ORIGINAL_PATH` 存相对路径，宿主机根目录为 `/zoesoft/med-collect/state/originals/`。每个原件的文件路径为 `<原件ID前两位>/<原件ID>/original.html` 或 `original.pdf`。迁移或备份时同时保存 Oracle、原件目录和本批审核交接目录。
+Oracle 用户为 `ZYMEDCOLLECT`，原文元数据表 `MC_MATERIAL` 与新增来源表 `MC_SYNC_ORIGIN` 位于 `ZYMEDCOLLECT_TAB` 表空间。原件表 `MC_ORIGINAL.ORIGINAL_PATH` 存相对路径，宿主机根目录为 `/zoesoft/med-collect/state/originals/`。本批原件的文件路径为 `<原件ID前两位>/<原件ID>/original.html` 或 `original.pdf`。迁移或备份时同时保存 Oracle、原件目录和本批审核交接目录。
 
-批次目录为 `/zoesoft/med-collect/operations/manuals-20261123/`。复制其中的 `review.html` 到内网审核终端即可打开独立清单，点击一行可进入需要登录的原件或知识详情页。采集时的外部网页和 PDF 快照位于批次 `files/`，系统日常提供下载的原件位于 `state/originals/`。
+当前清单位于 `/zoesoft/med-collect/operations/manuals-mainland-20261124/`。复制 `review.html` 到内网审核终端即可打开独立清单，按「拟新增」或「业务原有 · 仅对照」筛选。打开稿件可查看原件和最新查重结果。源机构清单见 `publishers.json`，已核验的两组数据分别保存在 `audited-creates.json` 和 `protected-matches.json`。
 
 在医学审批开始前，可在 3.27 执行以下只读复验。脚本提示输入现网采集账号和密码，检查 Oracle 应用返回的摘要和状态、官方文件指纹、服务器路径、业务项目和 PDF 预览。开始审批后，原报告用于对照当时状态，已批准或已同步的条目在工作台查看当前回执和版本。
 
 ~~~bash
-cd /zoesoft/med-collect/operations/manuals-20261123
+cd /zoesoft/med-collect/operations/manuals-mainland-20261124
 python3 readback.py
+python3 make_review.py
 ~~~
 
-逐份审核从采集端“审核与同步”进入。确认拟更新的业务 ID 和差异后再作医学审核决定。同步后通过知识详情的“业务回执”核对 4.23 记录、摘要和 PDF 附件。[批次交接](handoff.md#节点-17--中文说明书批量采集与待审交接)
+本批 413 份拟新增稿从「审核与同步」办理医学审核。183 份只读稿可核对业务原文与差异。现场的 `oracle-readback.json` 保存了本批原件、稿件状态、审批和业务来源核验结果，`protected-business-before.json`、`protected-business-after.json` 保存了 183 个业务 ID 的升级前后指纹。已获批的采集系统首建知识可从详情发起修订，完成后查看业务回执。[批次交接](handoff.md)

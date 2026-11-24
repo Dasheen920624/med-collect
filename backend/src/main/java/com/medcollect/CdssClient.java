@@ -135,6 +135,7 @@ class CdssClient {
     }
 
     String findCreated(String type, String childType, String title, String marker) {
+        String found = null;
         for (int page = 1; page <= 20; page++) {
             var form = new LinkedHashMap<>(Map.of("type", type, "name", title, "validFlag", "1",
                     "page", Integer.toString(page), "rows", "50"));
@@ -144,10 +145,12 @@ class CdssClient {
             if (!rows.isArray()) throw new RemoteFailure("4.23 返回的知识查询结果不可识别");
             for (JsonNode item : rows) {
                 if (item.path("remark").asText().contains(marker) && !item.path("id").asText().isBlank()) {
-                    return item.path("id").asText();
+                    String id = item.path("id").asText();
+                    if (found != null && !found.equals(id)) throw new RemoteFailure("4.23 有多条记录使用同一新增标识，请核对来源");
+                    found = id;
                 }
             }
-            if (rows.size() < 50 || response.path("total").asLong(Long.MAX_VALUE) <= page * 50L) return null;
+            if (rows.size() < 50 || response.path("total").asLong(Long.MAX_VALUE) <= page * 50L) return found;
         }
         throw new RemoteFailure("同名候选过多，请在 4.23 核对同步标识");
     }

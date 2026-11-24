@@ -24,9 +24,9 @@ import org.springframework.stereotype.Component;
 
 @Component
 class BusinessKnowledge {
-    enum Operation { CREATE, UPDATE, SKIP, CHOOSE }
+    enum Operation { CREATE, UPDATE, SKIP, CHOOSE, REFERENCE_ONLY }
     record Difference(String field, String before, String after) {}
-    record Candidate(String id, String title, String knowledgeClass, String doi, String basis, String url) {}
+    record Candidate(String id, String title, String knowledgeClass, String doi, String basis, String url, boolean collectorCreated) {}
     record Receipt(String remoteId, String url, String type, String childType, String knowledgeClass,
                    boolean categoryMatches, boolean titleMatches, boolean summaryMatches, Boolean pdfMatches) {
         boolean verified() { return categoryMatches && titleMatches && summaryMatches && !Boolean.FALSE.equals(pdfMatches); }
@@ -58,12 +58,14 @@ class BusinessKnowledge {
     private final CdssClient cdss;
     private final KnowledgeTemplates templates;
     private final KnowledgeWorkflow workflow;
+    private final SyncOrigins origins;
 
-    BusinessKnowledge(ObjectMapper json, CdssClient cdss, KnowledgeTemplates templates, KnowledgeWorkflow workflow) {
+    BusinessKnowledge(ObjectMapper json, CdssClient cdss, KnowledgeTemplates templates, KnowledgeWorkflow workflow, SyncOrigins origins) {
         this.json = json;
         this.cdss = cdss;
         this.templates = templates;
         this.workflow = workflow;
+        this.origins = origins;
     }
 
     Plan plan(Knowledge draft, Material material, String selectedId) {
@@ -232,7 +234,7 @@ class BusinessKnowledge {
     private Candidate candidate(JsonNode row, String basis) {
         String id = row.path("id").asText();
         return new Candidate(id, row.path("name").asText(), row.path("knowledgeClass").asText(""),
-                remoteDoi(row), basis, cdss.previewUrl(id));
+                remoteDoi(row), basis, cdss.previewUrl(id), origins.owns(id));
     }
 
     private Plan compare(Knowledge draft, Material material, KnowledgeTemplates.Schema schema, String doi,
@@ -274,6 +276,10 @@ class BusinessKnowledge {
         boolean attach = material.pdf() && !hasOriginal(original, material);
         if (attach) {
             changes.add(new Difference("PDF 原件", "现有附件保留", material.fileName() + " · SHA-256 " + material.sha256()));
+        }
+        if (!changes.isEmpty() && !target.collectorCreated()) {
+            return new Plan(Operation.REFERENCE_ONLY, doi, target, candidates, List.copyOf(changes),
+                    original, fingerprint(original), Map.of(), false);
         }
         var form = new LinkedHashMap<String, String>();
         form.put("name", savedTitle);
@@ -381,11 +387,13 @@ class BusinessKnowledge {
                 material.pdf() ? hasOriginal(actual, material) : null);
     }
 
-    void verifyCreated(Knowledge draft, Material material, ObjectNode actual) {
+    void verifyCreated(Knowledge draft, Material material, ObjectNode actual, boolean checkAttachment) {
         var schema = workflow.schema(draft);
         var desired = templates.cdssContent(schema,material,draft.summary(),workflow.fields(draft)).path("content");
         var body = layout(actual);
-        if (!actual.path("remark").asText().contains(marker(draft.id())) || !receipt(draft,material,actual,null).verified()
+        var result = receipt(draft, material, actual, null);
+        if (!actual.path("remark").asText().contains(marker(draft.id())) || !result.categoryMatches()
+                || !result.titleMatches() || !result.summaryMatches() || (checkAttachment && Boolean.FALSE.equals(result.pdfMatches()))
                 || !trim(draft.knowledgeClass()).equals(actual.path("knowledgeClass").asText("")) || body == null) {
             throw new CdssClient.RemoteFailure("4.23 新增回读的标题、类别、摘要或 PDF 与审核稿不一致");
         }

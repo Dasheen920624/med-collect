@@ -1,7 +1,7 @@
 export const materialStates = { PENDING: '待审核', APPROVED: '已通过', RETURNED: '已退回' }
 export const knowledgeStates = {
   DRAFT: '草稿', PENDING: '待审核', APPROVED: '待同步', RETURNED: '已退回',
-  SYNCING: '同步中', SYNC_FAILED: '同步异常', SYNCED: '已同步',
+  SYNCING: '同步中', SYNC_FAILED: '同步异常', SYNCED: '已同步', REFERENCE_ONLY: '业务原有 · 仅对照',
 }
 export const runStates = { RUNNING: '执行中', SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败' }
 export const modes = { URL: '指定网址下载', EUROPE_PMC: '文献检索', WEB: '全网搜索', UPLOAD: '手工上传', BUSINESS: '4.23 业务文献' }
@@ -20,6 +20,7 @@ export const actions = {
   SYNC_ATTACHED: '绑定 PDF', SYNC_REJECTED: '业务接口拒绝', SYNC_FAILED: '同步异常',
   SYNCED: '同步成功', SYNC_RESET: '复核后重新排队', SYNC_REVIEWED: '检查业务重复与差异',
   SYNC_REVIEW_STALE: '业务内容变化，待重新审核', SYNC_SKIPPED: '内容一致，跳过写入',
+  SYNC_PROTECTED: '业务原有知识，归入只读对照',
   SYNC_UPDATE_POSTING: '请求更新原业务记录', SYNC_UPDATED: '原业务记录已更新',
   REVISION_CREATED: '发起新版本草稿', ...runStates,
 }

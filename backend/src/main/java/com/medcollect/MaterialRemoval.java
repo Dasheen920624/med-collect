@@ -39,9 +39,9 @@ class MaterialRemoval {
                     .param("id",id).query(String.class).list();
             for (String draft:drafts) {
                 var k=store.knowledge(draft);
-                if (k.remoteId()!=null || k.syncPhase()!=null || !List.of("DRAFT","RETURNED","PENDING").contains(k.status().name())
+                if (k.remoteId()!=null || k.syncPhase()!=null || !List.of("DRAFT","RETURNED","PENDING","REFERENCE_ONLY").contains(k.status().name())
                         || db.sql("SELECT COUNT(*) FROM mc_sync_version WHERE knowledge_id=:id").param("id",draft).query(Long.class).single()>0
-                        || db.sql("SELECT COUNT(*) FROM mc_event WHERE entity_type='KNOWLEDGE' AND entity_id=:id AND action='SYNC_STARTED'")
+                        || db.sql("SELECT COUNT(*) FROM mc_event WHERE entity_type='KNOWLEDGE' AND entity_id=:id AND action IN ('APPROVED','SYNC_STARTED')")
                             .param("id",draft).query(Long.class).single()>0) throw conflict("已有审批或同步记录，请保留该原件及其版本");
             }
             if (!trim(material.sourceUrl()).isEmpty() && db.sql("""

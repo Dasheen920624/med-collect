@@ -69,14 +69,14 @@ class KnowledgeWorkflow {
         if ("EDITABLE".equals(human)) {
             from += " AND k.status IN ('DRAFT','RETURNED')";
         } else if (!trim(human).isBlank()) {
-            from += " AND (CASE WHEN k.status IN ('DRAFT','PENDING','RETURNED') THEN k.status ELSE 'APPROVED' END) = :human";
+            from += " AND (CASE WHEN k.status IN ('DRAFT','PENDING','RETURNED','REFERENCE_ONLY') THEN k.status ELSE 'APPROVED' END) = :human";
             filters.put("human", human);
         }
         if ("READY".equals(sync)) {
             from += " AND k.status = 'APPROVED'";
         } else if (!trim(sync).isBlank()) {
             from += " AND (CASE WHEN k.sync_phase = 'SKIPPED' THEN 'SKIPPED' WHEN k.status IN"
-                    + " ('SYNCING','SYNCED','SYNC_FAILED') THEN k.status ELSE 'UNSYNCED' END) = :sync";
+                    + " ('SYNCING','SYNCED','SYNC_FAILED','REFERENCE_ONLY') THEN k.status ELSE 'UNSYNCED' END) = :sync";
             filters.put("sync", sync);
         }
         String columns = """

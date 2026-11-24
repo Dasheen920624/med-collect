@@ -5,7 +5,7 @@ defineProps({ differences: { type: Array, required: true } })
 <template>
   <div v-if="differences.length" class="table-wrap">
     <table class="difference-table">
-      <thead><tr><th scope="col">字段</th><th scope="col">4.23 当前内容</th><th scope="col">审核稿拟更新内容</th></tr></thead>
+      <thead><tr><th scope="col">字段</th><th scope="col">4.23 当前内容</th><th scope="col">采集稿内容</th></tr></thead>
       <tbody>
         <tr v-for="(item, index) in differences" :key="index">
           <th scope="row">{{ item.field }}</th><td>{{ item.before || '—' }}</td><td>{{ item.after || '—' }}</td>
