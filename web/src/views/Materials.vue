@@ -14,6 +14,22 @@ import StateBadge from '../components/StateBadge.vue'
 
 const props = defineProps({ session: Object, detail: String, parseOnly: Boolean, directory: Array, subjectId: String })
 const emit = defineEmits(['navigate', 'notice', 'scope', 'directory-changed'])
+const removalReason = ref('')
+const confirmingRemoval = ref(false)
+async function removeMaterial() {
+  const material = item.value.material
+  if (!removalReason.value.trim() || busy.value) return
+  busy.value = true
+  panelError.value = ''
+  try {
+    await send('/materials/' + material.id, { revision: material.revision, reason: removalReason.value.trim() }, 'DELETE')
+    item.value = null
+    await load()
+    emit('directory-changed')
+    emit('notice', '原件及其未审批知识稿已移除')
+  } catch (e) { panelError.value = e.message }
+  finally { busy.value = false }
+}
 const table = ref({ rows: [], total: 0, page: 1, size: 10 })
 const freshFilters = () => ({ query: '', status: '', format: '', classId: '', originalsOnly: false,
   domainId: '', materialTypeId: '', acquireMode: '', parsed: '', from: '', until: '' })
@@ -116,6 +132,8 @@ async function openMaterial(id, purpose = '') {
     summary.value = item.value.material.sourceAbstract || ''
     notes.value = ''
     queue.value = []
+    confirmingRemoval.value = false
+    removalReason.value = ''
     parseFocus.value = purpose === 'parse' && item.value.material.status === 'APPROVED'
     preview.value = purpose === 'preview' && item.value.material.formatCode === 'PDF'
     showExtract.value = purpose === 'preview' && !preview.value
@@ -365,6 +383,15 @@ watch(() => props.subjectId, () => { filters.value.classId = ''; load() })
         </button>
         <button class="link" @click="emit('navigate', 'knowledge', 'material:' + item.material.id)">查看此原文的知识</button>
       </div>
+    </section>
+    <section v-if="session.admin && item.knowledge.rows.every(k => ['PENDING','DRAFT','RETURNED'].includes(k.status))" class="form-section">
+      <button v-if="!confirmingRemoval" class="link" @click="confirmingRemoval = true">移除这份资料</button>
+      <template v-else>
+        <p>将永久移除本地原件和关联的未审批稿件。</p>
+        <label>移除原因<input v-model="removalReason" maxlength="400" /></label>
+        <button class="button secondary" :disabled="busy" @click="confirmingRemoval = false">取消</button>
+        <button class="button secondary" :disabled="busy || !removalReason.trim()" @click="removeMaterial">确认移除</button>
+      </template>
     </section>
     <p v-if="panelError" class="message error" role="alert">{{ panelError }}</p>
     <section v-if="!parseFocus && item.runs.length" class="form-section">

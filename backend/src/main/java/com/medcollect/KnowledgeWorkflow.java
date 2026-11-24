@@ -27,6 +27,7 @@ class KnowledgeWorkflow {
     private final CdssClient cdss;
     private final BusinessDictionaries dictionaries;
     private final TransactionTemplate transactions;
+    private final List<String> manualHosts;
 
     record Detail(String id, String materialId, String title, String typeCode, String knowledgeClass,
                   String summary, KnowledgeTemplates.Schema schema, Map<String, String> fields,
@@ -35,7 +36,7 @@ class KnowledgeWorkflow {
                   Long syncLease, String syncError, String updateTargetId) {}
 
     KnowledgeWorkflow(Store store, TemplateProfiles templates, ModelService model, DocumentReader reader,
-                      ObjectMapper json, CdssClient cdss, TransactionTemplate transactions, BusinessDictionaries dictionaries) {
+                      ObjectMapper json, CdssClient cdss, TransactionTemplate transactions, BusinessDictionaries dictionaries, AppSettings settings) {
         this.store = store;
         this.templates = templates;
         this.model = model;
@@ -44,6 +45,8 @@ class KnowledgeWorkflow {
         this.cdss = cdss;
         this.dictionaries = dictionaries;
         this.transactions = transactions;
+        manualHosts = (settings.manualSourceHosts()==null ? List.<String>of() : settings.manualSourceHosts()).stream().map(Support::trim).filter(s -> !s.isEmpty())
+                .map(s -> s.toLowerCase(Locale.ROOT)).toList();
     }
 
     Page<KnowledgeList> list(String query, KnowledgeStatus status, String materialId, String human, String sync,
@@ -95,6 +98,7 @@ class KnowledgeWorkflow {
 
     Detail create(String materialId, DraftInput request, String actor) {
         Material material = store.material(materialId);
+        requireSource(material,request.typeCode());
         if (material.status() != MaterialStatus.APPROVED) throw conflict("请先完成原文审核");
         templates.availableForCollection(request.typeCode());
         var schema = templates.schema(request.typeCode(), request.knowledgeClass());
@@ -128,6 +132,8 @@ class KnowledgeWorkflow {
         String usedModel = modelName;
         try {
             return transactions.execute(tx -> {
+                store.db().sql("SELECT id FROM mc_material WHERE id=:id FOR UPDATE").param("id",materialId)
+                        .query(String.class).optional().orElseThrow(() -> missing("原文资料已移除"));
                 store.db().sql("""
                     INSERT INTO mc_knowledge (id, material_id, title, type_code, knowledge_class, summary, template_json,
                       fields_json, relations_json, status, revision, model_name, created_at, updated_at)
@@ -206,6 +212,10 @@ class KnowledgeWorkflow {
 
     @Transactional
     Detail decision(String id, Decision input, String actor) {
+        if (input.approved()) {
+            Knowledge knowledge = store.knowledge(id);
+            requireSource(store.material(knowledge.materialId()),knowledge.typeCode());
+        }
         String note = input.approved() ? trim(input.note()) : requireText(input.note(), "退回时请填写原因");
         return transition(id, input.revision(), "('PENDING')",
                 input.approved() ? KnowledgeStatus.APPROVED : KnowledgeStatus.RETURNED, actor, note);
@@ -247,7 +257,23 @@ class KnowledgeWorkflow {
     }
 
     void validateBusinessValues(Knowledge k,boolean fresh) {
+        requireSource(store.material(k.materialId()),k.typeCode());
         if (cdss.configured()) dictionaries.validate(schema(k),fields(k),relations(k),fresh);
+    }
+
+    void requireSource(Material material,String type) {
+        if (manualHosts.isEmpty() || !List.of("8-1","8-2").contains(type)) return;
+        if (!allowedHost(material.sourceUrl()) || (!trim(material.fetchedUrl()).isEmpty() && !allowedHost(material.fetchedUrl()))) {
+            throw conflict("说明书需要使用已核实的中国大陆发布机构原件，请核对来源网址");
+        }
+    }
+
+    private boolean allowedHost(String url) {
+        try {
+            var uri=java.net.URI.create(trim(url));
+            return uri.getHost()!=null && ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
+                    && manualHosts.contains(uri.getHost().toLowerCase(Locale.ROOT));
+        } catch (IllegalArgumentException e) { return false; }
     }
 
     KnowledgeTemplates.Schema schema(Knowledge knowledge) {

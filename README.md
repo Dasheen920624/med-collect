@@ -12,7 +12,7 @@ Java 21、Spring Boot 和 Vue 3 应用。支持指定网址、栏目、Europe PM
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 mvn -f backend/pom.xml clean verify
-& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.8.jar
+& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.9.jar
 ~~~
 
 打开 [本地采集工作台](http://127.0.0.1:8085/)。`local` 使用当前运行目录下 `.medcollect/db` 的 H2，原件保存到 `.medcollect/originals`。回环地址的本地体验账户为 `admin`，密码为 `medcollect-local`。运行 Vue 开发服务器可用 `pnpm --dir web dev`，其 `/api` 请求代理到 `127.0.0.1:8085`。更改代理地址时设置 `MEDCOLLECT_DEV_API`。
@@ -33,7 +33,7 @@ $env:MEDCOLLECT_CDSS_PASSWORD = Read-Host '业务账户密码' -MaskInput
 $env:MEDCOLLECT_MODEL_URL = Read-Host 'OpenAI 兼容网关地址'
 $env:MEDCOLLECT_MODEL_KEY = Read-Host '模型 API 密钥' -MaskInput
 $env:MEDCOLLECT_CDSS_CERT_SHA256 = Read-Host '业务系统叶证书 SHA-256 指纹，可留空使用信任链'
-& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.8.jar --spring.profiles.active=oracle
+& "$env:JAVA_HOME/bin/java.exe" -jar backend/target/med-collect-0.1.9.jar --spring.profiles.active=oracle
 ~~~
 
 业务 HTTPS 使用 JVM 信任链，也支持用现场核验的指纹固定叶证书。在系统设置测试业务连接并刷新模板后，可设置 `MEDCOLLECT_CDSS_SYNC_ENABLED=true` 并重启采集服务。
@@ -51,6 +51,7 @@ $env:MEDCOLLECT_CDSS_CERT_SHA256 = Read-Host '业务系统叶证书 SHA-256 指�
 | `MEDCOLLECT_SETTINGS_KEY` | 32 字节密钥的 Base64；设置后可在界面保存 API 密钥，数据库内使用 AES-GCM 密文。部署时用同一个值解密 |
 | `MEDCOLLECT_SEARX_URL` | 配置 SearXNG 的服务根地址或 `/search`。其 `search.formats` 需包含 `json` |
 | `MEDCOLLECT_PRIVATE_SOURCE_HOSTS` | 逗号分隔的、允许采集的内网主机名或 IP。内网 SearXNG 也在这里登记 |
+| `MEDCOLLECT_MANUAL_SOURCE_HOSTS` | 检验、检查说明书允许的发布机构主机名，以逗号分隔。部署时填入已核实的中国大陆机构域名。留空时关闭这项来源筛选 |
 | `MEDCOLLECT_SCHEDULING_ENABLED` | 是否自动运行已启用的采集计划，默认为 true |
 
 ## 注册与用户管理

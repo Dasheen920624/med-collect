@@ -19,9 +19,18 @@
 
 服务器上的部署文档和交接记录为 `/zoesoft/med-collect/deployment.md` 与 `/zoesoft/med-collect/handoff.md`。
 
+## 说明书来源与资料移除
+
+现网使用 `med-collect:0.1.9-20261124-083bc2b7ed9a`、Oracle 和原件卷。JAR 的 SHA-256 为 `083bc2b7ed9a2b542caba7c4270a783c5383a4b6d746ad315e50f2970cff1ff4`。升级包含增量迁移 `008-material-removal.sql`。17 项回归测试通过，覆盖移除后按相同指纹重新上传。已在现网核对删除、来源限制和新采集批次。
+
+1. `config/app.env` 中的 `MEDCOLLECT_MANUAL_SOURCE_HOSTS` 配置已核实的发布机构主机，以逗号分隔。现场值为 `jyk.eraweb.cn,www.adicon.com.cn,www.greatmaster.cn,www.gdghospital.org.cn,chinanm.cma.org.cn`。新增来源时先核对机构所在地、原始编写者、发布页和附件。将机构登记在批次清单中，并把实际使用的发布及附件主机加入配置后重建容器。应用按主机完整名称核验来源及重定向地址，在检验和检查说明书建稿、提交、查重、审批和发起同步时生效。
+2. 管理员在「文献原文库」打开原件详情，选择「移除这份资料」，填写原因并确认。已审批、发生过同步、已有业务版本或仍被其他待审稿引用的原件受保护。已移除的原件不可再次按相同指纹采入。删除时同步处理本地草稿、分类和任务结果关联，执行历史保留移除标志。
+3. Oracle 的 `MC_REMOVED_MATERIAL` 保存移除指纹及文件清理状态。文件在数据库提交后删除。若磁盘暂时不可用，后台每分钟重试。查询 `SELECT COUNT(*) FROM mc_removed_material WHERE pending_path IS NOT NULL` 可检查积压。本批已确认积压为 0。历史回执位于 `operations/manuals-mainland-20261124/`，该目录权限为 `0750`。
+4. 在该批尚处于人工待审状态时，可在上述目录运行 `python3 readback.py`，输入采集工作台账号，通过正式 API 和原件卷复验摘要、PDF 页数、类型、字典及待审状态。审核员开始办理后，可按清单中的稿件 ID 查看新状态及同步版本记录。旧采集包已清除移出范围的原件，旧审核首页指向当前清单。
+
 ## 大批量网址采集
 
-2026-11-24 在 3.27 部署了 `med-collect:0.1.8-20261124-e59e5b99b8c9`，继续使用 Oracle 与现有原件卷。发行目录中 JAR 的 SHA-256 为 `e59e5b99b8c977925c7ea3358c7daaa335a57a1fcb68f0d4ba2bbd2dd19c6f05`。
+批量网址采集从 0.1.8 起支持分批提交和回执续跑，现网发行标识见上节。
 
 将公开原件网址逐行写进 UTF-8 文本。在部署目录运行下面的命令。工具使用 Python 3 标准库，交互式读取采集账号和密码。更换来源列表或批大小时使用新的回执文件。
 
@@ -158,7 +167,7 @@ if ($LASTEXITCODE -ne 0) { throw '前端构建失败' }
 mvn -f backend/pom.xml clean verify
 if ($LASTEXITCODE -ne 0) { throw '后端构建或测试失败' }
 
-$version = '0.1.8'
+$version = '0.1.9'
 $artifact = (Resolve-Path "backend/target/med-collect-$version.jar").Path
 $sha = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
 $release = '{0}-{1}-{2}' -f $version, (Get-Date -Format 'yyyyMMdd-HHmmss'), $sha.Substring(0, 12)

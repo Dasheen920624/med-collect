@@ -45,6 +45,7 @@ class SyncService {
     KnowledgeWorkflow.Detail start(String id, int revision, String actor) {
         if (!cdss.writeEnabled()) throw conflict("服务端尚未启用 4.23 同步");
         Knowledge current = store.knowledge(id);
+        workflow.requireSource(store.material(current.materialId()),current.typeCode());
         if (current.remoteId() == null && current.syncPhase() == null && reviews.approved(id).isEmpty()) {
             throw conflict("同步前须检查 4.23 重复与差异，并完成当前稿件的人工审核");
         }

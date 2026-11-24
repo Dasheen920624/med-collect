@@ -118,7 +118,8 @@ class ModelService {
                 {"title":"中文题名","summary":"忠实的中文摘要","fields":{"字段ID":"纯文本"}}。
                 fields 只能使用 allowedFields 中的 ID。可参考 extractionRules 中的字段说明。
                 title 和 summary 都是非空字符串。即使 allowedFields 为空，也必须从原文提取中文摘要，
-                此时只把 fields 设为 {}。不要输出代码围栏或 HTML。
+                此时只把 fields 设为 {}。摘要写成一段简明中文，概括用途、适用对象及原件明确的限制。
+                只摘取与当前项目有关的信息，避免导航、推荐文章和无关列表。不要输出代码围栏或 HTML。
                 """;
         JsonNode data = analysisResponse(active, prompt, input.toString());
         String summary = data.path("summary").textValue().strip();
@@ -134,7 +135,14 @@ class ModelService {
 
     private JsonNode analysisResponse(Saved active, String prompt, String source) {
         for (int attempt = 0; attempt < 2; attempt++) {
-            String output = chat(active, prompt, source, 3500);
+            String output;
+            try {
+                output = chat(active, prompt, source, attempt == 0 ? 3500 : 6500);
+            } catch (OutputLimit exceeded) {
+                if (attempt == 1) throw exceeded;
+                prompt += "\n请精简上一轮输出，只生成一个完整 JSON 对象。摘要控制在 250 个汉字内，各字段仅概括必要信息。";
+                continue;
+            }
             try {
                 JsonNode result = jsonObject(output);
                 if (result.path("summary").isTextual() && !result.path("summary").textValue().isBlank()) return result;
@@ -219,7 +227,7 @@ class ModelService {
             }
             JsonNode choice = json.readTree(response.body()).path("choices").path(0);
             if ("length".equals(choice.path("finish_reason").asText())) {
-                throw upstream("模型响应达到输出上限，请调整模型或手工整理摘要");
+                throw new OutputLimit();
             }
             String output = choice.path("message").path("content").asText();
             if (output.isBlank()) throw upstream("模型未返回文本内容");
@@ -230,6 +238,10 @@ class ModelService {
         } catch (java.io.IOException e) {
             throw upstream("模型请求失败，请核对网关地址、网络或超时设置");
         }
+    }
+
+    private static final class OutputLimit extends ResponseStatusException {
+        OutputLimit() { super(HttpStatus.BAD_GATEWAY,"模型响应达到输出上限，请调整模型或手工整理摘要"); }
     }
 
     private JsonNode jsonObject(String output) {

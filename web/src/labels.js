@@ -6,7 +6,7 @@ export const knowledgeStates = {
 export const runStates = { RUNNING: '执行中', SUCCEEDED: '已完成', PARTIAL: '部分完成', FAILED: '失败' }
 export const modes = { URL: '指定网址下载', EUROPE_PMC: '文献检索', WEB: '全网搜索', UPLOAD: '手工上传', BUSINESS: '4.23 业务文献' }
 export const resultStates = { CAPTURED: '原文已入库', DUPLICATE: '已有记录', FAILED: '获取失败',
-  CANDIDATE: '搜索结果', METADATA: '仅来源和摘要' }
+  CANDIDATE: '搜索结果', METADATA: '仅来源和摘要', REMOVED: '原件已移除' }
 
 export const relations = {
   icd10Ids: '标准 ICD-10', diseaseIds: '疾病', drugCodes: '药品', itemIds: '检验或检查项目',

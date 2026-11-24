@@ -82,6 +82,27 @@ class WorkflowIntegrationTest {
     @Autowired CollectionService collection;
     @Autowired SourceHttp sourceHttp;
 
+    @Test
+    void removesLocalMaterialAndDraftAndPreventsRecapture() throws Exception {
+        byte[] bytes="<html><title>Removal fixture</title><body>Document for removal</body></html>".getBytes(StandardCharsets.UTF_8);
+        var upload=multipart("/api/materials/upload").file(new MockMultipartFile("file","removed.html","text/html",bytes))
+                .param("sourceUrl","https://example.org/removal-fixture").with(user("collector").roles("ADMIN")).with(csrf());
+        String id=body(mvc.perform(upload)).path("materialId").asText();
+        var m=postBody("/api/materials/"+id+"/decision",Map.of("revision",1,"approved",true,"sourceAbstract","Original"));
+        var k=postBody("/api/materials/"+id+"/drafts",Map.of("typeCode","31","knowledgeClass","17","useAi",false));
+        var path=originals.resolve(id.substring(0,2)).resolve(id);
+        assertThat(path.resolve("original.html")).isRegularFile();
+        var remove=delete("/api/materials/"+id).contentType(MediaType.APPLICATION_JSON)
+                .content(json.writeValueAsBytes(Map.of("revision",m.path("revision").asInt(),"reason","移除无用测试资料"))).with(csrf());
+        mvc.perform(remove.with(user("reviewer").roles("REVIEWER"))).andExpect(status().isForbidden());
+        mvc.perform(remove.with(user("collector").roles("ADMIN"))).andExpect(status().isNoContent());
+        mvc.perform(remove.with(user("collector").roles("ADMIN"))).andExpect(status().isNoContent());
+        mvc.perform(get("/api/materials/"+id+"/original").with(user("reviewer"))).andExpect(status().isNotFound());
+        mvc.perform(get("/api/knowledge/"+k.path("id").asText()).with(user("reviewer"))).andExpect(status().isNotFound());
+        assertThat(path).doesNotExist();
+        mvc.perform(upload).andExpect(status().isConflict());
+    }
+
     @DynamicPropertySource
     static void endpoints(DynamicPropertyRegistry environment) {
         environment.add("medcollect.cdss-url", WorkflowIntegrationTest::base);

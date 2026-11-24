@@ -205,6 +205,7 @@ class SyncReviews {
     }
 
     private void requireReviewable(Knowledge draft, int revision) {
+        workflow.requireSource(store.material(draft.materialId()),draft.typeCode());
         if (draft.revision() != revision || draft.remoteId() != null || draft.syncPhase() != null
                 || !List.of(KnowledgeStatus.PENDING, KnowledgeStatus.APPROVED, KnowledgeStatus.SYNC_FAILED).contains(draft.status())) {
             throw conflict("当前稿件状态或修订号已变化，请刷新后重试");

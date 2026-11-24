@@ -33,10 +33,11 @@ class CollectionController {
     private final AppSettings settings;
     private final Classifications classifications;
     private final KnowledgeWorkflow knowledge;
+    private final MaterialRemoval removal;
 
     CollectionController(Store store, CollectionService collection, MaterialService materials,
                          ModelService model, CdssClient cdss, AppSettings settings,
-                         Classifications classifications, KnowledgeWorkflow knowledge) {
+                         Classifications classifications, KnowledgeWorkflow knowledge, MaterialRemoval removal) {
         this.store = store;
         this.collection = collection;
         this.materials = materials;
@@ -45,6 +46,7 @@ class CollectionController {
         this.settings = settings;
         this.classifications = classifications;
         this.knowledge = knowledge;
+        this.removal = removal;
     }
 
     @GetMapping("/csrf")
@@ -191,6 +193,15 @@ class CollectionController {
     @PostMapping("/materials/{id}/decision")
     MaterialDetail materialDecision(@PathVariable String id, @Valid @RequestBody MaterialDecision input, Principal actor) {
         return materials.decide(id, input, actor.getName());
+    }
+
+    record Remove(@jakarta.validation.constraints.Positive int revision,
+                  @jakarta.validation.constraints.NotBlank @Size(max=400) String reason) {}
+
+    @DeleteMapping("/materials/{id}")
+    @ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    void remove(@PathVariable String id, @Valid @RequestBody Remove input, Principal actor) {
+        removal.remove(id,input.revision(),input.reason(),actor.getName());
     }
 
     private MaterialDetail detail(Material material) { return new MaterialDetail(material, store.extractedText(material)); }

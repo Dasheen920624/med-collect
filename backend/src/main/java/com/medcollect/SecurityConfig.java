@@ -36,6 +36,7 @@ class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/", "/index.html", "/assets/**", "/favicon.svg", "/api/csrf").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/register").permitAll()
+                        .requestMatchers(HttpMethod.DELETE, "/api/materials/*").hasRole("ADMIN")
                         .requestMatchers("/api/users", "/api/users/**", "/api/settings/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/sources/**", "/api/tasks/**", "/api/classifications",
                                 "/api/business-catalog/refresh", "/api/business-literature/*/collect", "/api/plans/**", "/api/materials/upload", "/api/runs/*/capture").hasRole("ADMIN")

@@ -36,6 +36,7 @@ class MaterialService {
         String fingerprint = sha(input.formatCode() + "\n" + identity + "\n" + version);
         try {
             return transactions.execute(tx -> {
+                requireAvailable(fingerprint);
                 if(business && !"METADATA".equals(input.formatCode())) {
                     String[] link=input.externalRef().split(" ",2)[0].split(":",-1);
                     if(link.length==4) {
@@ -73,6 +74,7 @@ class MaterialService {
                         VALUES (:id, :fingerprint, :sha, :title, :format, :file, :mime, :bytes, :url, :fetched, :source,
                           :authors, :publisher, :published, :external, :abstract, 'PENDING', :captured, 1)
                         """).paramSource(vars).update();
+                requireAvailable(fingerprint);
                 store.saveOriginal(id, input);
                 if (business) {
                     String[] source=input.externalRef().split(" ",2)[0].split(":",-1);
@@ -96,6 +98,13 @@ class MaterialService {
     }
 
     private record ReviewedSource(String id,String title,String summary) {}
+
+    private void requireAvailable(String fingerprint) {
+        if (store.db().sql("SELECT material_id FROM mc_removed_material WHERE fingerprint=:fp")
+                .param("fp",fingerprint).query(String.class).optional().isPresent()) {
+            throw conflict("这份原件已移除");
+        }
+    }
     private String normalized(String value) { return trim(value).replaceAll("\\s+"," "); }
 
     private Registration duplicate(Acquired input, String runId, String observation, String materialId) {

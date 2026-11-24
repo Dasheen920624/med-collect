@@ -41,4 +41,5 @@ medcollect:
   cdss-sync-enabled: ${MEDCOLLECT_CDSS_SYNC_ENABLED:false}
   searx-url: ${MEDCOLLECT_SEARX_URL:}
   private-source-hosts: ${MEDCOLLECT_PRIVATE_SOURCE_HOSTS:}
+  manual-source-hosts: ${MEDCOLLECT_MANUAL_SOURCE_HOSTS:}
   scheduling-enabled: ${MEDCOLLECT_SCHEDULING_ENABLED:true}

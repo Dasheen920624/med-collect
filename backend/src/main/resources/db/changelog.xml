@@ -9,4 +9,5 @@
   <include file="005-collection-configuration.sql" relativeToChangelogFile="true"/>
   <include file="006-knowledge-sync.sql" relativeToChangelogFile="true"/>
   <include file="007-business-catalog.xml" relativeToChangelogFile="true"/>
+  <include file="008-material-removal.sql" relativeToChangelogFile="true"/>
 </databaseChangeLog>

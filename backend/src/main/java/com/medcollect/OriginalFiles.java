@@ -89,7 +89,16 @@ class OriginalFiles {
     }
 
     void discard(String relative) throws IOException {
-        Path file = original(relative);
+        if (relative == null || !STORAGE_PATH.matcher(relative).matches()) throw new IOException("Invalid original storage path");
+        Path base = root.toRealPath();
+        Path file = base.resolve(relative);
+        Path shard = file.getParent().getParent();
+        if (Files.notExists(shard, NOFOLLOW_LINKS)) return;
+        if (!Files.isDirectory(shard, NOFOLLOW_LINKS)) throw new IOException("Invalid original storage directory");
+        if (Files.notExists(file.getParent(), NOFOLLOW_LINKS)) return;
+        if (!Files.isDirectory(file.getParent(), NOFOLLOW_LINKS) || !file.getParent().toRealPath().equals(file.getParent())) {
+            throw new IOException("Invalid material storage directory");
+        }
         deleteFiles(file.getParent(), file.getFileName().toString());
     }
 
